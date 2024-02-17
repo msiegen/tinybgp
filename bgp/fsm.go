@@ -220,6 +220,21 @@ func fsmRecvMessage(c net.Conn, deadline time.Time) (*bgp.BGPMessage, error) {
 	return bgp.ParseBGPBody(&h, buf[bgp.BGP_HEADER_LENGTH:h.Len])
 }
 
+// twoByteASN validates an ASN and returns a 2-byte ASN for use in the OPEN
+// message. This is either 23456 (for 4-byte ASNs) or the original ASN (if it
+// fits in 2-bytes).
+func twoByteASN(asn uint32) (uint16, error) {
+	switch asn {
+	case 0, 23456, 65535, 4294967295:
+		return 0, fmt.Errorf("invalid asn: %v", asn)
+	default:
+		if asn < 65535 {
+			return uint16(asn), nil
+		}
+		return bgp.AS_TRANS, nil
+	}
+}
+
 // sendOpen sends an OPEN.
 func (f *fsm) sendOpen(c net.Conn, transportAFI uint16) error {
 	// TODO: Implement support and add bgp.NewCapRouteRefresh() ?
@@ -255,9 +270,9 @@ func (f *fsm) sendOpen(c net.Conn, transportAFI uint16) error {
 	case 0:
 		return errors.New("unable to determine transport AFI")
 	}
-	as := uint16(f.server.ASN)
-	if as > 0xffff {
-		as = bgp.AS_TRANS
+	as, err := twoByteASN(f.server.ASN)
+	if err != nil {
+		return err
 	}
 	holdTime := uint16(f.timers.HoldTime / time.Second)
 	m := bgp.NewBGPOpenMessage(as, holdTime, f.server.RouterID, []bgp.OptionParameterInterface{
