@@ -621,14 +621,12 @@ func (f *fsm) processUpdate(peerAddr netip.Addr, importFilter Filter, m *bgp.BGP
 			nexthop, _ = netip.AddrFromSlice(a.Nexthop)
 			for _, addr := range a.Value {
 				if prefix, err := netip.ParsePrefix(addr.String()); err == nil {
-					f.server.logf("Received BGP update for %v from peer %v", prefix, f.session.PeerName)
 					updatedPrefixes = append(updatedPrefixes, prefix)
 				}
 			}
 		case *bgp.PathAttributeMpUnreachNLRI:
 			for _, addr := range a.Value {
 				if prefix, err := netip.ParsePrefix(addr.String()); err == nil {
-					f.server.logf("Received BGP withdraw for %v from peer %v", addr, f.session.PeerName)
 					withdrawnPrefixes = append(withdrawnPrefixes, prefix)
 				}
 			}
