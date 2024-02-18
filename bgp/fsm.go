@@ -282,12 +282,16 @@ func (f *fsm) sendOpen(c net.Conn, transportAFI uint16) error {
 }
 
 func openCapabilities(o *bgp.BGPOpen) ([]bgp.ParameterCapabilityInterface, error) {
+	var caps []bgp.ParameterCapabilityInterface
 	for _, p := range o.OptParams {
 		if c, ok := p.(*bgp.OptionParameterCapability); ok {
-			return c.Capability, nil
+			caps = append(caps, c.Capability...)
 		}
 	}
-	return nil, errors.New("missing capabilities")
+	if len(caps) == 0 {
+		return nil, errors.New("missing capabilities")
+	}
+	return caps, nil
 }
 
 // validateOpen checks the OPEN message received from the peer. It returns an
