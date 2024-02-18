@@ -16,6 +16,9 @@ package bgp
 
 import (
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
+	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
 )
 
 func TestTwoByteASN(t *testing.T) {
@@ -69,6 +72,65 @@ func TestTwoByteASN(t *testing.T) {
 			}
 			if got != tc.Want {
 				t.Errorf("got %v, want %v", got, tc.Want)
+			}
+		})
+	}
+}
+
+func TestOpenCapabilities(t *testing.T) {
+	capFQDN := &bgp.CapFQDN{HostName: "host1"}
+	capASN := &bgp.CapFourOctetASNumber{CapValue: 4200001234}
+	for _, tc := range []struct {
+		Name  string
+		Input *bgp.BGPOpen
+		Want  []bgp.ParameterCapabilityInterface
+	}{
+		{
+			Name: "collated",
+			Input: &bgp.BGPOpen{
+				OptParams: []bgp.OptionParameterInterface{
+					&bgp.OptionParameterCapability{
+						Capability: []bgp.ParameterCapabilityInterface{
+							capFQDN,
+							capASN,
+						},
+					},
+				},
+			},
+			Want: []bgp.ParameterCapabilityInterface{
+				capFQDN,
+				capASN,
+			},
+		},
+		{
+			Name: "dispersed",
+			Input: &bgp.BGPOpen{
+				OptParams: []bgp.OptionParameterInterface{
+					&bgp.OptionParameterCapability{
+						Capability: []bgp.ParameterCapabilityInterface{
+							capFQDN,
+						},
+					},
+					&bgp.OptionParameterCapability{
+						Capability: []bgp.ParameterCapabilityInterface{
+							capASN,
+						},
+					},
+				},
+			},
+			Want: []bgp.ParameterCapabilityInterface{
+				capFQDN,
+				capASN,
+			},
+		},
+	} {
+		t.Run(tc.Name, func(t *testing.T) {
+			got, err := openCapabilities(tc.Input)
+			if err != nil {
+				t.Fatalf("got error %q, want success", err)
+			}
+			if diff := cmp.Diff(tc.Want, got); diff != "" {
+				t.Errorf("openCapabilities() mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
