@@ -715,6 +715,7 @@ func (f *fsm) run(peer *Peer) {
 		Timeout:   defaultOpenTimeout,
 		LocalAddr: peer.localAddr(),
 		KeepAlive: -1,
+		Control:   peer.DialerControl,
 	}
 	transportAFI := peer.transportAFI()
 	peerAddr := peer.addr()

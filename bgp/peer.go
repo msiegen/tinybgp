@@ -19,6 +19,7 @@ import (
 	"net"
 	"net/netip"
 	"strconv"
+	"syscall"
 
 	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
 )
@@ -36,11 +37,15 @@ type Peer struct {
 	LocalAddr, RemoteAddr netip.Addr
 	Port                  int
 	Passive               bool
-	ImportFilter          Filter
-	ExportFilter          Filter
-	Timers                *Timers
-	fsm                   *fsm
-	dynamic               bool
+	// If DialerControl is not nil, it is called after creating the network
+	// connection but before actually dialing. See
+	// https://pkg.go.dev/net#Dialer.Control for details.
+	DialerControl func(_, _ string, _ syscall.RawConn) error
+	ImportFilter  Filter
+	ExportFilter  Filter
+	Timers        *Timers
+	fsm           *fsm
+	dynamic       bool
 }
 
 func (p *Peer) localAddr() net.Addr {
