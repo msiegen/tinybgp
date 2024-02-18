@@ -258,13 +258,13 @@ func (f *fsm) sendOpen(c net.Conn, transportAFI uint16) error {
 	case bgp.AFI_IP:
 		if supportsIPv6 {
 			caps = append(caps, bgp.NewCapExtendedNexthop([]*bgp.CapExtendedNexthopTuple{
-				bgp.NewCapExtendedNexthopTuple(bgp.RF_IPv4_UC, bgp.AFI_IP6),
+				bgp.NewCapExtendedNexthopTuple(bgp.RF_IPv6_UC, bgp.AFI_IP),
 			}))
 		}
 	case bgp.AFI_IP6:
 		if supportsIPv4 {
 			caps = append(caps, bgp.NewCapExtendedNexthop([]*bgp.CapExtendedNexthopTuple{
-				bgp.NewCapExtendedNexthopTuple(bgp.RF_IPv6_UC, bgp.AFI_IP),
+				bgp.NewCapExtendedNexthopTuple(bgp.RF_IPv4_UC, bgp.AFI_IP6),
 			}))
 		}
 	case 0:
