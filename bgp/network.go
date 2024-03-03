@@ -15,11 +15,14 @@
 package bgp
 
 import (
+	"net/netip"
 	"sync"
 
 	"golang.org/x/exp/slices"
 )
 
+// A Network represents a range of addresses with a common prefix that can be
+// reached by zero or more distinct paths.
 type Network struct {
 	mu               sync.Mutex
 	allPaths         []Path
@@ -29,18 +32,28 @@ type Network struct {
 	generation       int64
 }
 
+// AddPath adds a path by which this network can be reached. It replaces any
+// previously added path from the same peer.
 func (n *Network) AddPath(p Path) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	n.allPaths = append(n.allPaths, p)
 	n.allPathsVersion += 1
+	for i, oldPath := range n.allPaths {
+		if oldPath.Peer == p.Peer {
+			n.allPaths[i] = p
+			return
+		}
+	}
+	n.allPaths = append(n.allPaths, p)
 }
 
-func (n *Network) RemovePath(p Path) {
+// RemovePath removes a path via the specified peer. It is safe to call even if
+// no path from the peer is present.
+func (n *Network) RemovePath(peer netip.Addr) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	for i, item := range n.allPaths {
-		if item.Equal(p) {
+		if item.Peer == peer {
 			s := slices.Delete(n.allPaths, i, i+1)
 			n.allPaths[len(s)] = Path{} // for garbage collection
 			n.allPaths = s
@@ -53,6 +66,10 @@ func (n *Network) RemovePath(p Path) {
 	n.allPathsVersion += 1
 }
 
+// BestPaths returns the best way to reach this network, and a generation number
+// that increments any time the best path has changed. An empty slice is
+// returned if no path is known, and multiple paths may be returned if several
+// are equally good.
 func (n *Network) BestPaths() ([]Path, int64) {
 	n.mu.Lock()
 	defer n.mu.Unlock()

@@ -23,17 +23,21 @@ import (
 
 // Path represents a single network path to a destination.
 type Path struct {
-	Peer        netip.Addr
-	Nexthop     netip.Addr
-	ASPath      []uint32
+	// Peer is the BGP neighbor from which this path was received.
+	Peer netip.Addr
+	// Nexthop is the IP neighbor where packets traversing the path should be
+	// sent. It's commonly equal to the peer address, but can differ e.g. if the
+	// peer is a route server.
+	Nexthop netip.Addr
+	// LocalPref specifies a priority for the path. Higher values mean the path
+	// is more preferred.
+	LocalPref int
+	// ASPath is a slice of ASNs. The first element is the nexthop and the last
+	// element is the path's origin.
+	ASPath []uint32
+	// Communities are BGP communities as defined by
+	// https://datatracker.ietf.org/doc/html/rfc1997.
 	Communities []uint32
-}
-
-func NewLocalPathV6(communities ...uint32) Path {
-	return Path{
-		Nexthop:     netip.IPv6Unspecified(),
-		Communities: communities,
-	}
 }
 
 // Equal checks for equality, ignoring the generation.
@@ -44,7 +48,7 @@ func (p Path) Equal(q Path) bool {
 		slices.Equal(p.Communities, q.Communities)
 }
 
-// Contains checks whether the path contains the specified AS number.
+// Contains checks whether the path contains the given AS number.
 func (p Path) Contains(asn uint32) bool {
 	for _, hop := range p.ASPath {
 		if hop == asn {
@@ -54,9 +58,14 @@ func (p Path) Contains(asn uint32) bool {
 	return false
 }
 
-// SortPaths sorts the paths by the length of their ASPath, shortest first.
+// SortPaths sorts the paths by their local preference (highest value first). If
+// the local preference between two paths is equal, the one with the shorter AS
+// path sorts first.
 func SortPaths(ps []Path) {
 	sort.SliceStable(ps, func(i, j int) bool {
-		return len(ps[i].ASPath) < len(ps[j].ASPath)
+		if ps[i].LocalPref == ps[j].LocalPref {
+			return len(ps[i].ASPath) < len(ps[j].ASPath)
+		}
+		return ps[i].LocalPref > ps[j].LocalPref
 	})
 }

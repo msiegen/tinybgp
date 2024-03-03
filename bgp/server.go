@@ -41,10 +41,6 @@ type Server struct {
 	RouterID string
 	// ASN is the autonomous system number. This is required.
 	ASN uint32
-	// RIB is the routing information base. You must initialize this to contain a
-	// (possibly empty) table for each desired route family before starting the
-	// server. Networks may be added and removed from the tables at any time.
-	RIB map[RouteFamily]*Table
 	// CreatePeer is called when an incomming connection doesn't match any
 	// predefined peer. If this function is non-nil and returns a non-error, the
 	// connection will be accepted using the dynamically created peer. Dynamic
@@ -78,6 +74,10 @@ func (s *Server) fatalf(format string, v ...any) {
 }
 
 // AddPeer adds a peer.
+//
+// Peers that are added to a non-running server will be held idle until Serve
+// is called. Peers that are added after the first call to Serve will
+// immediately have their state machine start running.
 func (s *Server) AddPeer(p *Peer) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -112,11 +112,11 @@ func (s *Server) matchPeer(conn net.Conn) (*Peer, error) {
 	)
 	for _, p := range s.peers {
 		switch {
-		case remoteAddr == p.RemoteAddr && localAddr == p.LocalAddr:
+		case remoteAddr == p.Addr && localAddr == p.LocalAddr:
 			fullMatch = append(fullMatch, p)
-		case remoteAddr == p.RemoteAddr && !p.LocalAddr.IsValid():
+		case remoteAddr == p.Addr && !p.LocalAddr.IsValid():
 			remoteMatch = append(remoteMatch, p)
-		case localAddr == p.LocalAddr && !p.RemoteAddr.IsValid():
+		case localAddr == p.LocalAddr && !p.Addr.IsValid():
 			localMatch = append(localMatch, p)
 		}
 	}
@@ -137,9 +137,9 @@ func (s *Server) matchPeer(conn net.Conn) (*Peer, error) {
 	if err != nil {
 		return nil, err
 	}
-	p.LocalAddr = localAddr
-	p.RemoteAddr = remoteAddr
+	p.Addr = remoteAddr
 	p.Passive = true
+	p.LocalAddr = localAddr
 	p.dynamic = true
 	p.start(s)
 	s.dynamicPeers[p] = struct{}{}
@@ -175,8 +175,9 @@ func (s *Server) acceptLoop(l net.Listener) {
 }
 
 // Serve runs the BGP protocol. A listener is optional, and multiple listeners
-// can be provided by calling Serve concurrently in several goroutines. Serve
-// blocks until Shutdown or Close is called.
+// can be provided by calling Serve concurrently in several goroutines. All
+// concurrent calls to Serve block until a single call to Shutdown or Close is
+// made.
 func (s *Server) Serve(l net.Listener) error {
 	s.mu.Lock()
 	if s.running {

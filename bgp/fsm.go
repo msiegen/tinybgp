@@ -100,9 +100,10 @@ func (s *session) setLocalIP(c net.Conn) {
 }
 
 type fsm struct {
-	server       *Server
-	timers       *Timers
-	exportFilter Filter
+	server        *Server
+	peer          *Peer
+	timers        *Timers
+	exportFilters []Filter
 	// acceptC is used to pass incomming connections from the Server.acceptLoop
 	// to fsm.run.
 	acceptC chan net.Conn
@@ -243,11 +244,11 @@ func (f *fsm) sendOpen(c net.Conn, transportAFI uint16) error {
 		caps = append(caps, bgp.NewCapFQDN(f.server.Hostname, f.server.Domainname))
 	}
 	caps = append(caps, bgp.NewCapFourOctetASNumber(f.server.ASN))
-	supportsIPv4 := f.server.RIB[IPv4Unicast] != nil
+	supportsIPv4 := f.peer.supportsRouteFamily(IPv4Unicast)
 	if supportsIPv4 {
 		caps = append(caps, bgp.NewCapMultiProtocol(bgp.RF_IPv4_UC))
 	}
-	supportsIPv6 := f.server.RIB[IPv6Unicast] != nil
+	supportsIPv6 := f.peer.supportsRouteFamily(IPv6Unicast)
 	if supportsIPv6 {
 		caps = append(caps, bgp.NewCapMultiProtocol(bgp.RF_IPv6_UC))
 	}
@@ -317,9 +318,9 @@ func (f *fsm) validateOpen(o *bgp.BGPOpen, transportAFI uint16, peerAddr netip.A
 			fourByteAS = c.CapValue
 		case *bgp.CapMultiProtocol:
 			switch {
-			case c.CapValue == bgp.RF_IPv4_UC && f.server.RIB[IPv4Unicast] != nil:
+			case c.CapValue == bgp.RF_IPv4_UC && f.peer.supportsRouteFamily(IPv4Unicast):
 				f.session.RouteFamilies[IPv4Unicast] = true
-			case c.CapValue == bgp.RF_IPv6_UC && f.server.RIB[IPv6Unicast] != nil:
+			case c.CapValue == bgp.RF_IPv6_UC && f.peer.supportsRouteFamily(IPv6Unicast):
 				f.session.RouteFamilies[IPv6Unicast] = true
 			}
 		case *bgp.CapExtendedNexthop:
@@ -464,7 +465,7 @@ func (f *fsm) sendWithdraw(c net.Conn, network netip.Prefix) error {
 // call to sendUpdates.
 func (f *fsm) sendUpdates(c net.Conn) (bool, error) {
 	var alive bool
-	for rf, rib := range f.server.RIB {
+	for rf, rib := range f.peer.Export {
 		if !f.session.RouteFamilies[rf] {
 			// Skip route families not supported by the peer.
 			continue
@@ -491,7 +492,7 @@ func (f *fsm) sendUpdates(c net.Conn) (bool, error) {
 		}
 
 		// Send updates for any new or changed networks.
-		for _, prefix := range rib.AllNetworks() {
+		for _, prefix := range rib.Prefixes() {
 			n := rib.Network(prefix)
 			bestPaths, version := n.BestPaths()
 			if len(bestPaths) == 0 {
@@ -508,15 +509,13 @@ func (f *fsm) sendUpdates(c net.Conn) (bool, error) {
 				}
 				continue
 			}
-			if f.exportFilter != nil {
-				p, err := f.exportFilter(prefix, bp)
-				if err != nil {
+			for _, filter := range f.exportFilters {
+				if err := filter(prefix, &bp); err != nil {
 					if err := withdraw(prefix, version, fmt.Sprintf("export filter failed: %v", err)); err != nil {
 						return false, err
 					}
 					continue
 				}
-				bp = p
 			}
 			f.server.logf("Announcing %v to peer %v", prefix, f.session.PeerName)
 			if err := f.sendUpdate(c, prefix, bp); err != nil {
@@ -607,7 +606,7 @@ func (f *fsm) sendLoop(c net.Conn) (chan<- notification, <-chan error) {
 	return notifyC, errC
 }
 
-func (f *fsm) processUpdate(peerAddr netip.Addr, importFilter Filter, m *bgp.BGPUpdate) {
+func (f *fsm) processUpdate(peerAddr netip.Addr, importFilters []Filter, m *bgp.BGPUpdate) {
 	var (
 		afi               uint16
 		safi              uint8
@@ -648,6 +647,12 @@ func (f *fsm) processUpdate(peerAddr netip.Addr, importFilter Filter, m *bgp.BGP
 		// behaved peer should not send them.
 		return
 	}
+	rib := f.peer.Import[rf]
+	if rib == nil {
+		// Ignore route families that don't exist in our import table. This can
+		// happen if our import and export tables are configured differently.
+		return
+	}
 	for _, prefix := range updatedPrefixes {
 		p := Path{
 			Peer:        peerAddr,
@@ -655,25 +660,23 @@ func (f *fsm) processUpdate(peerAddr netip.Addr, importFilter Filter, m *bgp.BGP
 			ASPath:      asPath,
 			Communities: communities,
 		}
-		if importFilter != nil {
-			fp, err := importFilter(prefix, p)
-			if err != nil {
+		for _, filter := range importFilters {
+			if err := filter(prefix, &p); err != nil {
 				if !errors.Is(err, ErrDiscard) {
 					f.server.logf("Not importing %v from peer %v due to error: %v", prefix, f.session.PeerName, err)
 				}
 				continue
 			}
-			p = fp
 		}
 		//f.server.logf("Installing %v with %v", prefix, p)
-		f.server.RIB[rf].Network(prefix).AddPath(p)
+		rib.Network(prefix).AddPath(p)
 	}
 	// TODO: Also process withdrawals. Might need to remove these by their peer
 	// rather than constructing the full original Path and searching for that.
 }
 
 // recvLoop launches a background goroutine to handle incomming messages.
-func (f *fsm) recvLoop(c net.Conn, peerAddr netip.Addr, importFilter Filter, holdTime time.Duration, notifyC chan<- notification) <-chan error {
+func (f *fsm) recvLoop(c net.Conn, peerAddr netip.Addr, importFilters []Filter, holdTime time.Duration, notifyC chan<- notification) <-chan error {
 	errC := make(chan error, 1)
 	go func(errC chan<- error) {
 		deadline := time.Now().Add(holdTime)
@@ -695,7 +698,7 @@ func (f *fsm) recvLoop(c net.Conn, peerAddr netip.Addr, importFilter Filter, hol
 			switch m := msg.Body.(type) {
 			case *bgp.BGPUpdate:
 				deadline = time.Now().Add(holdTime)
-				f.processUpdate(peerAddr, importFilter, m)
+				f.processUpdate(peerAddr, importFilters, m)
 			case *bgp.BGPKeepAlive:
 				deadline = time.Now().Add(holdTime)
 			case *bgp.BGPNotification:
@@ -714,7 +717,7 @@ func (f *fsm) recvLoop(c net.Conn, peerAddr netip.Addr, importFilter Filter, hol
 
 // run executes the BGP state machine.
 func (f *fsm) run(peer *Peer) {
-	f.session.PeerName = peer.RemoteAddr.String()
+	f.session.PeerName = peer.Addr.String()
 	dialer := &net.Dialer{
 		Timeout:   defaultOpenTimeout,
 		LocalAddr: peer.localAddr(),
@@ -795,7 +798,7 @@ func (f *fsm) run(peer *Peer) {
 			}
 			switch o := m.Body.(type) {
 			case *bgp.BGPOpen:
-				if code, err := f.validateOpen(o, transportAFI, peer.RemoteAddr, peer.ASN); err != nil {
+				if code, err := f.validateOpen(o, transportAFI, peer.Addr, peer.ASN); err != nil {
 					if code != 0 {
 						fsmSendNotification(bgpConn, bgp.BGP_ERROR_OPEN_MESSAGE_ERROR, code, nil) // ignore errors
 					}
@@ -845,7 +848,7 @@ func (f *fsm) run(peer *Peer) {
 			f.session.initCache()
 			f.session.setLocalIP(bgpConn)
 			notifyC, sendErrC := f.sendLoop(bgpConn)
-			recvErrC := f.recvLoop(bgpConn, peer.RemoteAddr, peer.ImportFilter, holdTime, notifyC)
+			recvErrC := f.recvLoop(bgpConn, peer.Addr, peer.ImportFilters, holdTime, notifyC)
 			select {
 			case err := <-sendErrC:
 				if err != nil {

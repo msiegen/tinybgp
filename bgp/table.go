@@ -21,41 +21,42 @@ import (
 	"golang.org/x/exp/maps"
 )
 
+// A Table is a set of networks that each have a distinct CIDR prefix.
 type Table struct {
-	mu                 sync.Mutex
-	networks           map[netip.Prefix]*Network
-	networksVersion    int64
-	allNetworks        []netip.Prefix
-	allNetworksVersion int64
+	mu              sync.Mutex
+	networks        map[netip.Prefix]*Network
+	networksVersion int64
+	prefixes        []netip.Prefix
+	prefixesVersion int64
 }
 
-func NewTable() *Table {
-	return &Table{
-		networks: map[netip.Prefix]*Network{},
-	}
-}
-
+// Network returns the network for the given prefix, creating an entry in the
+// table if one does not already exist.
 func (t *Table) Network(p netip.Prefix) *Network {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	n := t.networks[p]
-	if n == nil {
-		n = &Network{}
-		t.networks[p] = n
-		t.networksVersion += 1
+	if n := t.networks[p]; n != nil {
+		return n
 	}
+	if t.networks == nil {
+		t.networks = map[netip.Prefix]*Network{}
+	}
+	n := &Network{}
+	t.networks[p] = n
+	t.networksVersion += 1
 	return n
 }
 
-func (t *Table) AllNetworks() []netip.Prefix {
+// Prefixes returns the prefixes of all the networks in the table.
+func (t *Table) Prefixes() []netip.Prefix {
 	if t == nil {
 		return nil
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.allNetworksVersion != t.networksVersion {
-		t.allNetworks = maps.Keys(t.networks)
-		t.allNetworksVersion = t.networksVersion
+	if t.prefixesVersion != t.networksVersion {
+		t.prefixes = maps.Keys(t.networks)
+		t.prefixesVersion = t.networksVersion
 	}
-	return t.allNetworks
+	return t.prefixes
 }
