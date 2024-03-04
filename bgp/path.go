@@ -37,7 +37,7 @@ type Path struct {
 	ASPath []uint32
 	// Communities are BGP communities as defined by
 	// https://datatracker.ietf.org/doc/html/rfc1997.
-	Communities []uint32
+	Communities []Community
 }
 
 // Equal checks for equality, ignoring the generation.
