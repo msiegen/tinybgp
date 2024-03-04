@@ -443,7 +443,11 @@ func (f *fsm) sendUpdate(c net.Conn, network netip.Prefix, pth Path) error {
 		bgp.NewPathAttributeAsPath([]bgp.AsPathParamInterface{asp}),
 	)
 	if len(pth.Communities) != 0 {
-		a = append(a, bgp.NewPathAttributeCommunities(pth.Communities))
+		cs := make([]uint32, len(pth.Communities))
+		for i, c := range pth.Communities {
+			cs[i] = c.Uint32()
+		}
+		a = append(a, bgp.NewPathAttributeCommunities(cs))
 	}
 	m := bgp.NewBGPUpdateMessage(nil, a, nil)
 	return fsmSendMessage(c, m, defaultMessageTimeout)
@@ -614,7 +618,7 @@ func (f *fsm) processUpdate(peerAddr netip.Addr, importFilters []Filter, m *bgp.
 		updatedPrefixes   []netip.Prefix
 		withdrawnPrefixes []netip.Prefix
 		asPath            []uint32
-		communities       []uint32
+		communities       []Community
 	)
 	for _, pa := range m.PathAttributes {
 		switch a := pa.(type) {
@@ -638,7 +642,13 @@ func (f *fsm) processUpdate(peerAddr netip.Addr, importFilters []Filter, m *bgp.
 				asPath = append(asPath, ases.GetAS()...)
 			}
 		case *bgp.PathAttributeCommunities:
-			communities = a.Value
+			if len(a.Value) != 0 {
+				cs := make([]Community, len(a.Value))
+				for i, v := range a.Value {
+					cs[i] = NewCommunity(v)
+				}
+				communities = cs
+			}
 		}
 	}
 	rf := NewRouteFamily(afi, safi)
