@@ -693,11 +693,13 @@ func (f *fsm) recvLoop(c net.Conn, peerAddr netip.Addr, importFilters []Filter, 
 		for {
 			msg, err := fsmRecvMessage(c, deadline)
 			if err != nil {
-				errC <- err // Unblock recvErrC in func run before sendErrC.
 				var me *bgp.MessageError
+				if errors.As(err, &me) {
+					f.server.logf("Ignoring message from BGP peer %v: message error type=%v, subtype=%v: %v", peerAddr, me.TypeCode, me.SubTypeCode, err)
+					continue
+				}
+				errC <- err // Unblock recvErrC in func run before sendErrC.
 				switch {
-				case errors.As(err, &me):
-					notifyC <- notification{me.TypeCode, me.SubTypeCode}
 				case time.Now().After(deadline):
 					notifyC <- notification{bgp.BGP_ERROR_HOLD_TIMER_EXPIRED, bgp.BGP_ERROR_SUB_HOLD_TIMER_EXPIRED}
 				default:
