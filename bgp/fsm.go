@@ -572,10 +572,12 @@ func (f *fsm) sendLoop(c net.Conn) (chan<- notification, <-chan error) {
 	notifyC := make(chan notification, 2)
 	errC := make(chan error, 1)
 	go func(notifyC <-chan notification, errC chan<- error) {
+		var delay time.Duration
 		nextKeepAlive := time.Now().Add(f.timers.NextKeepAlive())
 		for {
 			select {
-			case <-time.After(1 * time.Second):
+			case <-time.After(delay):
+				delay = 1 * time.Second
 				ok, err := f.sendUpdates(c)
 				if err != nil {
 					errC <- err
