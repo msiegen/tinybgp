@@ -15,26 +15,51 @@
 package bgp
 
 import (
+	"fmt"
 	"net"
 	"net/netip"
+	"sync"
 	"testing"
 	"time"
 )
 
 // logger implements the Logger interface for use in testing.
 type logger struct {
-	t      *testing.T
-	prefix string
+	t       *testing.T
+	started time.Time
+	prefix  string
+
+	mu   sync.Mutex
+	done bool
 }
 
-func (l *logger) Printf(fmt string, args ...any) {
-	l.t.Logf(l.prefix+fmt, args...)
+func (l *logger) Printf(format string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.done {
+		ts := fmt.Sprintf("%03.6f", float64(time.Since(l.started).Nanoseconds())/1e9)
+		l.t.Logf(ts+" "+l.prefix+format, args...)
+	}
 }
 
-func newLogger(t *testing.T, prefix string) *logger {
-	return &logger{t, prefix}
+func (l *logger) Stop() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.done = true
 }
 
+func newLogger(t *testing.T, started time.Time, prefix string) *logger {
+	return &logger{
+		t:       t,
+		started: started,
+		prefix:  prefix,
+	}
+}
+
+// TestServer may exercise varied code paths depending on timing. To run a
+// single subtest multiple times in sequence, invoke it like this:
+//
+//	go test -v -count=10 ./... --test.run=TestServer/both_sides_active
 func TestServer(t *testing.T) {
 	loopback := netip.MustParseAddr("::1")
 
@@ -65,11 +90,57 @@ func TestServer(t *testing.T) {
 				Import: map[RouteFamily]*Table{IPv6Unicast: &Table{}},
 			},
 		},
+		{
+			Name: "both_sides_active",
+			LeftServer: &Server{
+				RouterID: "100.64.0.1",
+				ASN:      64521,
+			},
+			LeftPeer: &Peer{
+				ASN:    64522,
+				Export: map[RouteFamily]*Table{IPv6Unicast: &Table{}},
+			},
+			RightServer: &Server{
+				RouterID: "100.64.0.2",
+				ASN:      64522,
+			},
+			RightPeer: &Peer{
+				ASN:    64521,
+				Import: map[RouteFamily]*Table{IPv6Unicast: &Table{}},
+			},
+		},
+		{
+			Name: "both_sides_active_collision_detection_reversed",
+			LeftServer: &Server{
+				RouterID: "100.64.0.3",
+				ASN:      64523,
+			},
+			LeftPeer: &Peer{
+				ASN:    64522,
+				Export: map[RouteFamily]*Table{IPv6Unicast: &Table{}},
+			},
+			RightServer: &Server{
+				RouterID: "100.64.0.2",
+				ASN:      64522,
+			},
+			RightPeer: &Peer{
+				ASN:    64523,
+				Import: map[RouteFamily]*Table{IPv6Unicast: &Table{}},
+			},
+		},
 	} {
 		t.Run(tc.Name, func(t *testing.T) {
+			tc := tc
+			t.Parallel()
+
+			testStarted := time.Now()
 			// Enable debug logging.
-			tc.LeftServer.Logger = newLogger(t, "L: ")
-			tc.RightServer.Logger = newLogger(t, "R: ")
+			leftLogger := newLogger(t, testStarted, "L: ")
+			defer leftLogger.Stop()
+			tc.LeftServer.Logger = leftLogger
+			rightLogger := newLogger(t, testStarted, "R: ")
+			defer rightLogger.Stop()
+			tc.RightServer.Logger = rightLogger
 
 			// Start two listeners on any available ports.
 			leftListener, err := net.Listen("tcp", "[::1]:0")
