@@ -298,19 +298,19 @@ func openCapabilities(o *bgp.BGPOpen) ([]bgp.ParameterCapabilityInterface, error
 // validateOpen checks the OPEN message received from the peer. It returns an
 // error subcode that may be combined with code bgp.BGP_ERROR_OPEN_MESSAGE_ERROR
 // into a NOTIFICATION message back to the peer.
-func (f *fsm) validateOpen(o *bgp.BGPOpen, transportAFI uint16, peerAddr netip.Addr, peerASN uint32) (uint8, error) {
+func validateOpen(o *bgp.BGPOpen, transportAFI uint16, peer *Peer) (session, uint8, error) {
 	// We only support BGP-4, https://datatracker.ietf.org/doc/html/rfc4271.
 	if o.Version != 4 {
-		return bgp.BGP_ERROR_SUB_UNSUPPORTED_VERSION_NUMBER, fmt.Errorf("unsupported BGP version: %v", o.Version)
+		return session{}, bgp.BGP_ERROR_SUB_UNSUPPORTED_VERSION_NUMBER, fmt.Errorf("unsupported BGP version: %v", o.Version)
 	}
 	// Parse the capabilities advertised by the peer.
 	caps, err := openCapabilities(o)
 	if err != nil {
-		return bgp.BGP_ERROR_SUB_UNSUPPORTED_OPTIONAL_PARAMETER, err
+		return session{}, bgp.BGP_ERROR_SUB_UNSUPPORTED_OPTIONAL_PARAMETER, err
 	}
 	var fourByteAS uint32
-	f.session = session{PeerName: peerAddr.String()} // Clear the previous session.
-	f.session.RouteFamilies = map[RouteFamily]bool{}
+	sess := session{PeerName: peer.Addr.String()} // create new session
+	sess.RouteFamilies = map[RouteFamily]bool{}
 	extendedNexthops := map[bgp.CapExtendedNexthopTuple]bool{}
 	for _, cc := range caps {
 		switch c := cc.(type) {
@@ -318,29 +318,29 @@ func (f *fsm) validateOpen(o *bgp.BGPOpen, transportAFI uint16, peerAddr netip.A
 			fourByteAS = c.CapValue
 		case *bgp.CapMultiProtocol:
 			switch {
-			case c.CapValue == bgp.RF_IPv4_UC && f.peer.supportsRouteFamily(IPv4Unicast):
-				f.session.RouteFamilies[IPv4Unicast] = true
-			case c.CapValue == bgp.RF_IPv6_UC && f.peer.supportsRouteFamily(IPv6Unicast):
-				f.session.RouteFamilies[IPv6Unicast] = true
+			case c.CapValue == bgp.RF_IPv4_UC && peer.supportsRouteFamily(IPv4Unicast):
+				sess.RouteFamilies[IPv4Unicast] = true
+			case c.CapValue == bgp.RF_IPv6_UC && peer.supportsRouteFamily(IPv6Unicast):
+				sess.RouteFamilies[IPv6Unicast] = true
 			}
 		case *bgp.CapExtendedNexthop:
 			for _, t := range c.Tuples {
 				extendedNexthops[*t] = true
 			}
 		case *bgp.CapFQDN:
-			f.session.PeerHost = c.HostName
-			f.session.PeerDomain = c.DomainName
+			sess.PeerHost = c.HostName
+			sess.PeerDomain = c.DomainName
 			if c.HostName != "" {
-				f.session.PeerName = f.session.PeerHost + "/" + peerAddr.String()
+				sess.PeerName = sess.PeerHost + "/" + peer.Addr.String()
 			}
 		}
 	}
 	// Abort if the peer doesn't support 4-byte AS numbers. That should be rare,
 	// and establishing an invariant here simplifies the logic in sendUpdate.
 	if fourByteAS == 0 {
-		return bgp.BGP_ERROR_SUB_UNSUPPORTED_CAPABILITY, errors.New("missing support for 4-byte AS numbers")
+		return session{}, bgp.BGP_ERROR_SUB_UNSUPPORTED_CAPABILITY, errors.New("missing support for 4-byte AS numbers")
 	}
-	f.session.PeerASN = fourByteAS
+	sess.PeerASN = fourByteAS
 	// Ensure that the local address of an IPv4 BGP session can be used as a
 	// nexthop for IPv6 routes announced via the session, and vice versa. If the
 	// peer doesn't support this, limit the session to only announce routes of the
@@ -348,43 +348,43 @@ func (f *fsm) validateOpen(o *bgp.BGPOpen, transportAFI uint16, peerAddr netip.A
 	switch transportAFI {
 	case bgp.AFI_IP:
 		if !extendedNexthops[bgp.CapExtendedNexthopTuple{bgp.AFI_IP6, bgp.SAFI_UNICAST, bgp.AFI_IP}] {
-			delete(f.session.RouteFamilies, IPv6Unicast)
+			delete(sess.RouteFamilies, IPv6Unicast)
 		}
 	case bgp.AFI_IP6:
 		if !extendedNexthops[bgp.CapExtendedNexthopTuple{bgp.AFI_IP, bgp.SAFI_UNICAST, bgp.AFI_IP6}] {
-			delete(f.session.RouteFamilies, IPv4Unicast)
+			delete(sess.RouteFamilies, IPv4Unicast)
 		}
 	default:
-		return 0, errors.New("unable to determine transport AFI")
+		return session{}, 0, errors.New("unable to determine transport AFI")
 	}
 	// At least one of IPv4 or IPv6 unicast must be supported.
-	if !f.session.RouteFamilies[IPv4Unicast] && !f.session.RouteFamilies[IPv6Unicast] {
-		return bgp.BGP_ERROR_SUB_UNSUPPORTED_CAPABILITY, errors.New("must support at least one of ipv4 or ipv6")
+	if !sess.RouteFamilies[IPv4Unicast] && !sess.RouteFamilies[IPv6Unicast] {
+		return session{}, bgp.BGP_ERROR_SUB_UNSUPPORTED_CAPABILITY, errors.New("must support at least one of ipv4 or ipv6")
 	}
 	// Validate the peer AS number, if we know what it should be.
-	if peerASN != 0 {
-		if peerASN < 0xffff {
-			if o.MyAS != uint16(peerASN) {
-				return bgp.BGP_ERROR_SUB_BAD_PEER_AS, fmt.Errorf("wrong peer AS: got %v, want %v", o.MyAS, peerASN)
+	if peer.ASN != 0 {
+		if peer.ASN < 0xffff {
+			if o.MyAS != uint16(peer.ASN) {
+				return session{}, bgp.BGP_ERROR_SUB_BAD_PEER_AS, fmt.Errorf("wrong peer AS: got %v, want %v", o.MyAS, peer.ASN)
 			}
 		} else {
 			if o.MyAS != bgp.AS_TRANS {
-				return bgp.BGP_ERROR_SUB_BAD_PEER_AS, fmt.Errorf("wrong peer AS: got %v, want transition %v", o.MyAS, bgp.AS_TRANS)
+				return session{}, bgp.BGP_ERROR_SUB_BAD_PEER_AS, fmt.Errorf("wrong peer AS: got %v, want transition %v", o.MyAS, bgp.AS_TRANS)
 			}
 		}
-		if fourByteAS != peerASN {
-			return bgp.BGP_ERROR_SUB_BAD_PEER_AS, fmt.Errorf("wrong peer AS in 4-byte capability: got %v, want %v", fourByteAS, peerASN)
+		if fourByteAS != peer.ASN {
+			return session{}, bgp.BGP_ERROR_SUB_BAD_PEER_AS, fmt.Errorf("wrong peer AS in 4-byte capability: got %v, want %v", fourByteAS, peer.ASN)
 		}
 	}
 	// Ensure the hold time is not too short or too long.
 	if o.HoldTime < 3 {
-		return bgp.BGP_ERROR_SUB_UNACCEPTABLE_HOLD_TIME, fmt.Errorf("hold time is too short: %v", o.HoldTime)
+		return session{}, bgp.BGP_ERROR_SUB_UNACCEPTABLE_HOLD_TIME, fmt.Errorf("hold time is too short: %v", o.HoldTime)
 	}
 	if o.HoldTime > 600 {
-		return bgp.BGP_ERROR_SUB_UNACCEPTABLE_HOLD_TIME, fmt.Errorf("hold time is too long: %v", o.HoldTime)
+		return session{}, bgp.BGP_ERROR_SUB_UNACCEPTABLE_HOLD_TIME, fmt.Errorf("hold time is too long: %v", o.HoldTime)
 	}
 	// Success!
-	return 0, nil
+	return sess, 0, nil
 }
 
 // fsmSendKeepAlive sends a KEEPALIVE.
@@ -729,7 +729,6 @@ func (f *fsm) recvLoop(c net.Conn, peerAddr netip.Addr, importFilters []Filter, 
 
 // run executes the BGP state machine.
 func (f *fsm) run(peer *Peer) {
-	f.session.PeerName = peer.Addr.String()
 	dialer := &net.Dialer{
 		Timeout:   defaultOpenTimeout,
 		LocalAddr: peer.localAddr(),
@@ -744,35 +743,41 @@ func (f *fsm) run(peer *Peer) {
 		Min:    1 * time.Second,
 		Max:    90 * time.Second,
 	}
+	var connecting bool
+	var collisionDetector *collisionDetector
 	var bgpConn net.Conn
 	var holdTime time.Duration
 	for {
 		switch f.getState() {
 		case bgp.BGP_FSM_IDLE:
+			f.session = session{PeerName: peerAddr} // clear previous session
 			var readyToConnect <-chan time.Time
 			if !peer.Passive {
 				readyToConnect = time.After(connectBackoff.Duration())
 			}
+			connecting = false
 			select {
+			case c := <-collisionDetector.Chan():
+				// We have an incomming connection that collided with an earlier
+				// outgoing dial and was selected as preferred. Grab it and jump
+				// straight to state ESTABLISHED.
+				bgpConn = c
+				f.session = collisionDetector.session
+				f.setState(bgp.BGP_FSM_ESTABLISHED)
 			case c := <-f.acceptC:
-				// TODO: Instead of assuming that this connection won the race, perform
-				// enough of the BGP handshake to properly choose the connection
-				// initiated by the BGP speaker with the larger router ID.
-				// https://datatracker.ietf.org/doc/html/rfc4271#section-6.8
-				// If the router IDs are the same, then pick the connection initiated by
-				// the BGP speaker with the larger AS number.
-				// https://datatracker.ietf.org/doc/html/rfc6286#section-2.3
+				// We have a new connection.
 				bgpConn = c
 				f.setState(bgp.BGP_FSM_ACTIVE)
 				// TODO: In all later states, also watch f.acceptC and close any
 				// connections that happen to be received.
 			case <-readyToConnect:
 				f.setState(bgp.BGP_FSM_CONNECT)
+				connecting = true
 			case <-f.stopC:
 				f.setState(state_BGP_FSM_TERMINATE)
 			}
-			// TODO: If we have a listener and get an incomming connection, accept it
-			// and jump to state ACTIVE.
+			collisionDetector.Stop()
+			collisionDetector = nil
 
 		case bgp.BGP_FSM_CONNECT:
 			// Make an outgoing connection in the background.
@@ -788,7 +793,8 @@ func (f *fsm) run(peer *Peer) {
 				f.setState(state_BGP_FSM_TERMINATE)
 			}
 			// TODO: If we get an incomming connection, accept it and jump to state
-			// ACTIVE.
+			// ACTIVE. Maybe this can be done by starting the colision handler earlier
+			// and indirecting back through the IDLE state?
 
 		case bgp.BGP_FSM_ACTIVE:
 			if err := f.sendOpen(bgpConn, transportAFI); err != nil {
@@ -799,8 +805,7 @@ func (f *fsm) run(peer *Peer) {
 			f.setState(bgp.BGP_FSM_OPENSENT)
 
 		case bgp.BGP_FSM_OPENSENT:
-			// TODO: Resolve the conflict in case both peers got here but sent their
-			// OPENs on opposite TCP connections.
+			collisionDetector = newCollisionDetector(connecting, f, peer, transportAFI)
 			m, err := fsmRecvMessage(bgpConn, time.Now().Add(defaultMessageTimeout))
 			if err != nil {
 				f.setStateError(peer, err)
@@ -810,7 +815,8 @@ func (f *fsm) run(peer *Peer) {
 			}
 			switch o := m.Body.(type) {
 			case *bgp.BGPOpen:
-				if code, err := f.validateOpen(o, transportAFI, peer.Addr, peer.ASN); err != nil {
+				sess, code, err := validateOpen(o, transportAFI, peer)
+				if err != nil {
 					if code != 0 {
 						fsmSendNotification(bgpConn, bgp.BGP_ERROR_OPEN_MESSAGE_ERROR, code, nil) // ignore errors
 					}
@@ -818,6 +824,7 @@ func (f *fsm) run(peer *Peer) {
 					bgpConn.Close() // ignore errors
 					continue
 				}
+				f.session = sess
 				if err := fsmSendKeepAlive(bgpConn, f.timers.HoldTime); err != nil {
 					f.setStateError(peer, err)
 					bgpConn.Close() // ignore errors
