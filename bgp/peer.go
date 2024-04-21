@@ -83,9 +83,17 @@ type Peer struct {
 	// the BGP session.
 	Timers *Timers
 
-	// DialerControl is called after creating the network connection but before
-	// actually dialing. See https://pkg.go.dev/net#Dialer.Control for details.
+	// DialerControl is called after creating the network connection but
+	// before actually dialing. See https://pkg.go.dev/net#Dialer.Control
+	// for background. To configure TCP MD5 authentication, set it to
+	// tcpmd5.DialerControl("password").
 	DialerControl func(network, address string, c syscall.RawConn) error
+
+	// ConfigureListener is called for each of the server's listeners upon
+	// adding the peer. To configure TCP MD5 authentication, set it to
+	// tcpmd5.ConfigureListener("2001:db8::1234", "password"), making
+	// sure that the IP address matches the one in Addr.
+	ConfigureListener func(l net.Listener) error
 
 	fsm     *fsm
 	dynamic bool
@@ -128,9 +136,9 @@ func (p *Peer) supportsRouteFamily(rf RouteFamily) bool {
 	return p.Import[rf] != nil || p.Export[rf] != nil
 }
 
-func (p *Peer) start(s *Server) {
+func (p *Peer) start(s *Server) error {
 	if p.fsm != nil {
-		p.fsm.server.fatalf("tried to start the same peer twice")
+		return errors.New("tried to start the same peer twice")
 	}
 	p.fsm = &fsm{
 		server:        s,
@@ -142,6 +150,7 @@ func (p *Peer) start(s *Server) {
 		doneC:         make(chan struct{}),
 	}
 	go p.fsm.run(p)
+	return nil
 }
 
 func (p *Peer) stop() {

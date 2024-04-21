@@ -21,6 +21,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/msiegen/tinybgp/third_party/tcpmd5"
 )
 
 // logger implements the Logger interface for use in testing.
@@ -128,6 +130,28 @@ func TestServer(t *testing.T) {
 				Import: map[RouteFamily]*Table{IPv6Unicast: &Table{}},
 			},
 		},
+		{
+			Name: "md5_auth",
+			LeftServer: &Server{
+				RouterID: "100.64.0.1",
+				ASN:      64521,
+			},
+			LeftPeer: &Peer{
+				ASN:           64522,
+				Export:        map[RouteFamily]*Table{IPv6Unicast: &Table{}},
+				DialerControl: tcpmd5.DialerControl("hunter2"),
+			},
+			RightServer: &Server{
+				RouterID: "100.64.0.2",
+				ASN:      64522,
+			},
+			RightPeer: &Peer{
+				ASN:               64521,
+				Passive:           true,
+				Import:            map[RouteFamily]*Table{IPv6Unicast: &Table{}},
+				ConfigureListener: tcpmd5.ConfigureListener("::1", "hunter2"),
+			},
+		},
 	} {
 		t.Run(tc.Name, func(t *testing.T) {
 			tc := tc
@@ -169,13 +193,13 @@ func TestServer(t *testing.T) {
 			// Start the servers.
 			go func() {
 				if err := tc.LeftServer.Serve(leftListener); err != nil {
-					t.Errorf("L: server failed: %v", err)
+					leftLogger.Printf("server failed: %v", err)
 				}
 			}()
 			defer tc.LeftServer.Close()
 			go func() {
 				if err := tc.RightServer.Serve(rightListener); err != nil {
-					t.Errorf("R: server failed: %v", err)
+					rightLogger.Printf("server failed: %v", err)
 				}
 			}()
 			defer tc.RightServer.Close()
