@@ -22,6 +22,7 @@
 package tcpmd5
 
 import (
+	"errors"
 	"net"
 	"os"
 	"syscall"
@@ -29,8 +30,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func buildTcpMD5Sig(address, key string) *unix.TCPMD5Sig {
-	t := unix.TCPMD5Sig{}
+func tcpMD5Sig(address, key string) *unix.TCPMD5Sig {
+	t := &unix.TCPMD5Sig{}
 	addr := net.ParseIP(address)
 	if addr.To4() != nil {
 		t.Addr.Family = unix.AF_INET
@@ -39,30 +40,49 @@ func buildTcpMD5Sig(address, key string) *unix.TCPMD5Sig {
 		t.Addr.Family = unix.AF_INET6
 		copy(t.Addr.Data[6:], addr.To16())
 	}
-
 	t.Keylen = uint16(len(key))
 	copy(t.Key[0:], []byte(key))
-
-	return &t
+	return t
 }
 
 // DialerControl returns a function that enables TCP MD5 signatures on dialed
 // connections. See https://pkg.go.dev/net#Dialer.Control for details.
 func DialerControl(password string) func(_, _ string, _ syscall.RawConn) error {
-	return func(network, address string, c syscall.RawConn) error {
-		var sockerr error
-		if password != "" {
-			addr, _, _ := net.SplitHostPort(address)
-			t := buildTcpMD5Sig(addr, password)
-			if err := c.Control(func(fd uintptr) {
-				sockerr = os.NewSyscallError("setsockopt", unix.SetsockoptTCPMD5Sig(int(fd), unix.IPPROTO_TCP, unix.TCP_MD5SIG, t))
-			}); err != nil {
-				return err
-			}
-			if sockerr != nil {
-				return sockerr
-			}
+	return func(_, address string, c syscall.RawConn) error {
+		addr, _, err := net.SplitHostPort(address)
+		if err != nil {
+			return err
 		}
-		return nil
+		t := tcpMD5Sig(addr, password)
+		var sockerr error
+		if err := c.Control(func(fd uintptr) {
+			sockerr = os.NewSyscallError("setsockopt", unix.SetsockoptTCPMD5Sig(int(fd), unix.IPPROTO_TCP, unix.TCP_MD5SIG, t))
+		}); err != nil {
+			return err
+		}
+		return sockerr
+	}
+}
+
+// ConfigureListener returns a function that enables TCP MD5 signatures for
+// connections accepted from the specified address.
+func ConfigureListener(address, password string) func(_ net.Listener) error {
+	t := tcpMD5Sig(address, password)
+	return func(lis net.Listener) error {
+		l, ok := lis.(*net.TCPListener)
+		if !ok {
+			return errors.New("not a tcp listener")
+		}
+		c, err := l.SyscallConn()
+		if err != nil {
+			return err
+		}
+		var sockerr error
+		if err := c.Control(func(fd uintptr) {
+			sockerr = os.NewSyscallError("setsockopt", unix.SetsockoptTCPMD5Sig(int(fd), unix.IPPROTO_TCP, unix.TCP_MD5SIG, t))
+		}); err != nil {
+			return err
+		}
+		return sockerr
 	}
 }

@@ -51,12 +51,14 @@ type Server struct {
 	Logger Logger
 
 	mu           sync.Mutex
+	initOnce     sync.Once
 	listeners    []net.Listener
 	peers        []*Peer
 	dynamicPeers map[*Peer]struct{}
 	running      bool
-	stopC, doneC chan struct{}
-	stopped      bool
+	closed       bool
+	serverClosed chan struct{}
+	peersStopped chan struct{}
 }
 
 func (s *Server) logf(format string, v ...any) {
@@ -73,6 +75,18 @@ func (s *Server) fatalf(format string, v ...any) {
 	panic(fmt.Sprintf(format, v...))
 }
 
+func (s *Server) startPeer(p *Peer) error {
+	// invariant: s.mu is locked
+	if p.ConfigureListener != nil {
+		for _, l := range s.listeners {
+			if err := p.ConfigureListener(l); err != nil {
+				return err
+			}
+		}
+	}
+	return p.start(s)
+}
+
 // AddPeer adds a peer.
 //
 // Peers that are added to a non-running server will be held idle until Serve
@@ -81,12 +95,12 @@ func (s *Server) fatalf(format string, v ...any) {
 func (s *Server) AddPeer(p *Peer) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.stopped {
-		return errors.New("server has been stopped")
+	if s.closed {
+		return errors.New("cannot add peer to closed server")
 	}
 	s.peers = append(s.peers, p)
 	if s.running {
-		p.start(s)
+		return s.startPeer(p)
 	}
 	return nil
 }
@@ -146,13 +160,12 @@ func (s *Server) matchPeer(conn net.Conn) (*Peer, error) {
 	return p, nil
 }
 
-func (s *Server) acceptLoop(l net.Listener) {
+func (s *Server) acceptLoop(l net.Listener) error {
+	defer s.Close() // close server if any listener fails
 	for {
 		conn, err := l.Accept()
 		if err != nil {
-			s.logf("Failed to accept connection on %v: %v", l.Addr(), err)
-			s.Close() // ignore errors
-			return
+			return fmt.Errorf("accept on %v: %v", l.Addr(), err)
 		}
 		p, err := s.matchPeer(conn)
 		if err != nil {
@@ -174,55 +187,54 @@ func (s *Server) acceptLoop(l net.Listener) {
 	}
 }
 
+func (s *Server) start(l net.Listener) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return errors.New("cannot start a closed server")
+	}
+	if l != nil {
+		s.listeners = append(s.listeners, l)
+	}
+	var startPeerErr error
+	s.initOnce.Do(func() {
+		s.running = true
+		s.dynamicPeers = map[*Peer]struct{}{}
+		s.serverClosed = make(chan struct{})
+		s.peersStopped = make(chan struct{})
+		for _, p := range s.peers {
+			if err := s.startPeer(p); err != nil {
+				// Only keep the first error.
+				if startPeerErr == nil {
+					startPeerErr = err
+				}
+			}
+		}
+	})
+	return startPeerErr
+}
+
 // Serve runs the BGP protocol. A listener is optional, and multiple listeners
 // can be provided by calling Serve concurrently in several goroutines. All
 // concurrent calls to Serve block until a single call to Shutdown or Close is
 // made.
 func (s *Server) Serve(l net.Listener) error {
-	s.mu.Lock()
-	if s.running {
-		if l != nil {
-			s.listeners = append(s.listeners, l)
-			go s.acceptLoop(l)
-		}
-		s.mu.Unlock()
-		<-s.doneC
-		return nil
-	}
-	s.running = true
-	s.dynamicPeers = map[*Peer]struct{}{}
-	s.stopC = make(chan struct{})
-	s.doneC = make(chan struct{})
-	for _, p := range s.peers {
-		p.start(s)
+	if err := s.start(l); err != nil {
+		return err
 	}
 	if l != nil {
-		s.listeners = append(s.listeners, l)
-		go s.acceptLoop(l)
+		return s.acceptLoop(l)
 	}
-	s.mu.Unlock()
-	<-s.stopC
-	var wg sync.WaitGroup
-	for _, p := range s.peers {
-		wg.Add(1)
-		go func(p *Peer) {
-			p.stop()
-			wg.Done()
-		}(p)
-	}
-	wg.Wait()
-	close(s.doneC)
-	return nil
+	<-s.serverClosed
+	return errors.New("server closed")
 }
 
 // Shutdown terminates the server and closes all listeners. It waits for all
 // peering connections to be closed before returning.
 func (s *Server) Shutdown(ctx context.Context) error {
-	if err := s.Close(); err != nil {
-		return err
-	}
+	s.Close() // ignore errors
 	select {
-	case <-s.doneC:
+	case <-s.peersStopped:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -234,16 +246,38 @@ func (s *Server) Shutdown(ctx context.Context) error {
 func (s *Server) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.stopC == nil {
-		return errors.New("server is not running")
-	}
-	if s.stopped {
+
+	// Only invoke the close sequence once.
+	if s.closed {
 		return errors.New("server is already closed")
 	}
+	s.closed = true
+	close(s.serverClosed)
+
+	// Close all listeners.
+	var closeErr error
 	for _, l := range s.listeners {
-		l.Close() // ignore errors
+		if err := l.Close(); err != nil {
+			// Only keep the first error from any listener.
+			if closeErr == nil {
+				closeErr = err
+			}
+		}
 	}
-	close(s.stopC)
-	s.stopped = true
-	return nil
+
+	// Stop the peers, but don't wait for them.
+	go func() {
+		var wg sync.WaitGroup
+		for _, p := range s.peers {
+			wg.Add(1)
+			go func(p *Peer) {
+				p.stop()
+				wg.Done()
+			}(p)
+		}
+		wg.Wait()
+		close(s.peersStopped)
+	}()
+
+	return closeErr
 }
