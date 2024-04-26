@@ -74,7 +74,7 @@ type session struct {
 	PeerASN uint32
 	// LocalIP holds a copy of the local IP address, used to populate the
 	// nexthop field in UPDATE messages.
-	LocalIP string
+	LocalIP netip.Addr
 	// Sent and Withdrawn hold the version of each network last sent to or
 	// withdrawn from the peer. Withdrawn networks are only tracked as long as
 	// they remain in the local RIB.
@@ -96,7 +96,7 @@ func (s *session) initCache() {
 // setLocalIP initializes the LocalIP field. It must be called once upon
 // connection establishment.
 func (s *session) setLocalIP(c net.Conn) {
-	s.LocalIP = c.LocalAddr().(*net.TCPAddr).IP.String()
+	s.LocalIP, _ = netip.AddrFromSlice(c.LocalAddr().(*net.TCPAddr).IP)
 }
 
 type fsm struct {
@@ -432,13 +432,26 @@ func (f *fsm) sendUpdate(c net.Conn, network netip.Prefix, pth Path) error {
 		// accomodate the cases of 1) keep the original nexthop for route server
 		// cases, 2) replace the nexthop with the local IP, 3) replace the nexthop
 		// with something else determined by the filtering logic.
-		nh = pth.Nexthop.String()
+		nh = pth.Nexthop
 	}
 	a := make([]bgp.PathAttributeInterface, 0, 4)
+	var nlri []*bgp.IPAddrPrefix
+	if network.Addr().Is4() && nh.Is4() {
+		// For IPv4 routed via an IPv4 nexthop, use the the NLRI field in the UPDATE
+		// message and populate the mandatory NEXT_HOP attribute as required by
+		// https://datatracker.ietf.org/doc/html/rfc4271.
+		a = append(a, bgp.NewPathAttributeNextHop(nh.String()))
+		nlri = []*bgp.IPAddrPrefix{
+			bgp.NewIPAddrPrefix(uint8(network.Bits()), network.Addr().String()),
+		}
+	} else {
+		// For IPv6 or IPv4 routed via an IPv6 nexthop, use the MP_REACH_NLRI
+		// attribute as required by https://datatracker.ietf.org/doc/html/rfc4760.
+		// According to https://datatracker.ietf.org/doc/html/rfc7606#section-5.1
+		// this should be the first attribute.
+		a = append(a, bgp.NewPathAttributeMpReachNLRI(nh.String(), []bgp.AddrPrefixInterface{ap}))
+	}
 	a = append(a,
-		// MP_REACH_NLRI should be the first attribute according to
-		// https://datatracker.ietf.org/doc/html/rfc7606#section-5.1
-		bgp.NewPathAttributeMpReachNLRI(nh, []bgp.AddrPrefixInterface{ap}),
 		bgp.NewPathAttributeOrigin(bgp.BGP_ORIGIN_ATTR_TYPE_INCOMPLETE),
 		bgp.NewPathAttributeAsPath([]bgp.AsPathParamInterface{asp}),
 	)
@@ -449,7 +462,7 @@ func (f *fsm) sendUpdate(c net.Conn, network netip.Prefix, pth Path) error {
 		}
 		a = append(a, bgp.NewPathAttributeCommunities(cs))
 	}
-	m := bgp.NewBGPUpdateMessage(nil, a, nil)
+	m := bgp.NewBGPUpdateMessage(nil, a, nlri)
 	return fsmSendMessage(c, m, defaultMessageTimeout)
 }
 
@@ -459,9 +472,16 @@ func (f *fsm) sendWithdraw(c net.Conn, network netip.Prefix) error {
 	if err != nil {
 		return err
 	}
-	m := bgp.NewBGPUpdateMessage(nil, []bgp.PathAttributeInterface{
-		bgp.NewPathAttributeMpUnreachNLRI([]bgp.AddrPrefixInterface{ap}),
-	}, nil)
+	var m *bgp.BGPMessage
+	if network.Addr().Is4() {
+		m = bgp.NewBGPUpdateMessage([]*bgp.IPAddrPrefix{
+			bgp.NewIPAddrPrefix(uint8(network.Bits()), network.Addr().String()),
+		}, nil, nil)
+	} else {
+		m = bgp.NewBGPUpdateMessage(nil, []bgp.PathAttributeInterface{
+			bgp.NewPathAttributeMpUnreachNLRI([]bgp.AddrPrefixInterface{ap}),
+		}, nil)
+	}
 	return fsmSendMessage(c, m, defaultMessageTimeout)
 }
 
