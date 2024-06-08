@@ -642,9 +642,28 @@ func (f *fsm) processUpdate(peerAddr netip.Addr, importFilters []Filter, m *bgp.
 		asPath            []uint32
 		communities       []Community
 	)
+	for _, prefix := range m.NLRI {
+		// Announcement for IPv4 via an IPv4 nexthop
+		addr, _ := netip.AddrFromSlice(prefix.Prefix)
+		if p := netip.PrefixFrom(addr, int(prefix.Length)); p.IsValid() {
+			updatedPrefixes = append(updatedPrefixes, p)
+		}
+		afi = bgp.AFI_IP
+		safi = bgp.SAFI_UNICAST
+	}
+	for _, prefix := range m.WithdrawnRoutes {
+		// Withdrawal for IPv4 via an IPv4 nexthop
+		addr, _ := netip.AddrFromSlice(prefix.Prefix)
+		if p := netip.PrefixFrom(addr, int(prefix.Length)); p.IsValid() {
+			withdrawnPrefixes = append(withdrawnPrefixes, p)
+		}
+		afi = bgp.AFI_IP
+		safi = bgp.SAFI_UNICAST
+	}
 	for _, pa := range m.PathAttributes {
 		switch a := pa.(type) {
 		case *bgp.PathAttributeMpReachNLRI:
+			// Announcement for IPv6 or IPv4 via an IPv6 nexthop
 			afi = a.AFI
 			safi = a.SAFI
 			nexthop, _ = netip.AddrFromSlice(a.Nexthop)
@@ -654,11 +673,14 @@ func (f *fsm) processUpdate(peerAddr netip.Addr, importFilters []Filter, m *bgp.
 				}
 			}
 		case *bgp.PathAttributeMpUnreachNLRI:
+			// Withdrawal for IPv6 or IPv4 via an IPv6 nexthop
 			for _, addr := range a.Value {
 				if prefix, err := netip.ParsePrefix(addr.String()); err == nil {
 					withdrawnPrefixes = append(withdrawnPrefixes, prefix)
 				}
 			}
+		case *bgp.PathAttributeNextHop:
+			nexthop, _ = netip.AddrFromSlice(a.Value)
 		case *bgp.PathAttributeAsPath:
 			for _, ases := range a.Value {
 				asPath = append(asPath, ases.GetAS()...)

@@ -63,17 +63,19 @@ func newLogger(t *testing.T, started time.Time, prefix string) *logger {
 //
 //	go test -v -count=10 ./... --test.run=TestServer/both_sides_active
 func TestServer(t *testing.T) {
-	loopback := netip.MustParseAddr("::1")
-
 	for _, tc := range []struct {
 		Name        string
+		Loopback    string
 		LeftServer  *Server
 		LeftPeer    *Peer
 		RightServer *Server
 		RightPeer   *Peer
+		Family      RouteFamily
+		Announce    string
 	}{
 		{
-			Name: "one_side_passive",
+			Name:     "one_side_passive",
+			Loopback: "::1",
 			LeftServer: &Server{
 				RouterID: "100.64.0.1",
 				ASN:      64521,
@@ -91,9 +93,58 @@ func TestServer(t *testing.T) {
 				ASN:    64521,
 				Import: map[RouteFamily]*Table{IPv6Unicast: &Table{}},
 			},
+			Family:   IPv6Unicast,
+			Announce: "2001:db8:1::/48",
 		},
 		{
-			Name: "both_sides_active",
+			Name:     "one_side_passive_ipv4",
+			Loopback: "127.0.0.1",
+			LeftServer: &Server{
+				RouterID: "100.64.0.1",
+				ASN:      64521,
+			},
+			LeftPeer: &Peer{
+				ASN:     64522,
+				Passive: true,
+				Export:  map[RouteFamily]*Table{IPv4Unicast: &Table{}},
+			},
+			RightServer: &Server{
+				RouterID: "100.64.0.2",
+				ASN:      64522,
+			},
+			RightPeer: &Peer{
+				ASN:    64521,
+				Import: map[RouteFamily]*Table{IPv4Unicast: &Table{}},
+			},
+			Family:   IPv4Unicast,
+			Announce: "192.0.2.0/24",
+		},
+		{
+			Name:     "one_side_passive_ipv4_via_ipv6_session",
+			Loopback: "::1",
+			LeftServer: &Server{
+				RouterID: "100.64.0.1",
+				ASN:      64521,
+			},
+			LeftPeer: &Peer{
+				ASN:     64522,
+				Passive: true,
+				Export:  map[RouteFamily]*Table{IPv4Unicast: &Table{}},
+			},
+			RightServer: &Server{
+				RouterID: "100.64.0.2",
+				ASN:      64522,
+			},
+			RightPeer: &Peer{
+				ASN:    64521,
+				Import: map[RouteFamily]*Table{IPv4Unicast: &Table{}},
+			},
+			Family:   IPv4Unicast,
+			Announce: "192.0.2.0/24",
+		},
+		{
+			Name:     "both_sides_active",
+			Loopback: "::1",
 			LeftServer: &Server{
 				RouterID: "100.64.0.1",
 				ASN:      64521,
@@ -110,9 +161,12 @@ func TestServer(t *testing.T) {
 				ASN:    64521,
 				Import: map[RouteFamily]*Table{IPv6Unicast: &Table{}},
 			},
+			Family:   IPv6Unicast,
+			Announce: "2001:db8:1::/48",
 		},
 		{
-			Name: "both_sides_active_collision_detection_reversed",
+			Name:     "both_sides_active_collision_detection_reversed",
+			Loopback: "::1",
 			LeftServer: &Server{
 				RouterID: "100.64.0.3",
 				ASN:      64523,
@@ -129,9 +183,12 @@ func TestServer(t *testing.T) {
 				ASN:    64523,
 				Import: map[RouteFamily]*Table{IPv6Unicast: &Table{}},
 			},
+			Family:   IPv6Unicast,
+			Announce: "2001:db8:1::/48",
 		},
 		{
-			Name: "md5_auth",
+			Name:     "md5_auth",
+			Loopback: "::1",
 			LeftServer: &Server{
 				RouterID: "100.64.0.1",
 				ASN:      64521,
@@ -151,14 +208,44 @@ func TestServer(t *testing.T) {
 				Import:            map[RouteFamily]*Table{IPv6Unicast: &Table{}},
 				ConfigureListener: tcpmd5.ConfigureListener("::1", "hunter2"),
 			},
+			Family:   IPv6Unicast,
+			Announce: "2001:db8:1::/48",
+		},
+		{
+			Name:     "md5_auth_ipv4",
+			Loopback: "127.0.0.1",
+			LeftServer: &Server{
+				RouterID: "100.64.0.1",
+				ASN:      64521,
+			},
+			LeftPeer: &Peer{
+				ASN:           64522,
+				Export:        map[RouteFamily]*Table{IPv4Unicast: &Table{}},
+				DialerControl: tcpmd5.DialerControl("hunter2"),
+			},
+			RightServer: &Server{
+				RouterID: "100.64.0.2",
+				ASN:      64522,
+			},
+			RightPeer: &Peer{
+				ASN:               64521,
+				Passive:           true,
+				Import:            map[RouteFamily]*Table{IPv4Unicast: &Table{}},
+				ConfigureListener: tcpmd5.ConfigureListener("127.0.0.1", "hunter2"),
+			},
+			Family:   IPv4Unicast,
+			Announce: "192.0.2.0/24",
 		},
 	} {
+
 		t.Run(tc.Name, func(t *testing.T) {
 			tc := tc
 			t.Parallel()
 
-			testStarted := time.Now()
+			loopback := netip.MustParseAddr(tc.Loopback)
+
 			// Enable debug logging.
+			testStarted := time.Now()
 			leftLogger := newLogger(t, testStarted, "L: ")
 			defer leftLogger.Stop()
 			tc.LeftServer.Logger = leftLogger
@@ -167,11 +254,12 @@ func TestServer(t *testing.T) {
 			tc.RightServer.Logger = rightLogger
 
 			// Start two listeners on any available ports.
-			leftListener, err := net.Listen("tcp", "[::1]:0")
+			lisAddr := netip.AddrPortFrom(loopback, 0).String()
+			leftListener, err := net.Listen("tcp", lisAddr)
 			if err != nil {
 				t.Fatalf("L: failed to listen: %v", err)
 			}
-			rightListener, err := net.Listen("tcp", "[::1]:0")
+			rightListener, err := net.Listen("tcp", lisAddr)
 			if err != nil {
 				t.Fatalf("R: failed to listen: %v", err)
 			}
@@ -205,14 +293,14 @@ func TestServer(t *testing.T) {
 			defer tc.RightServer.Close()
 
 			// Export one path from the left server.
-			wantPrefix := netip.MustParsePrefix("2001:db8:1::/48")
-			tc.LeftPeer.Export[IPv6Unicast].Network(wantPrefix).AddPath(Path{})
+			wantPrefix := netip.MustParsePrefix(tc.Announce)
+			tc.LeftPeer.Export[tc.Family].Network(wantPrefix).AddPath(Path{})
 
 			// Watch the right server until the path is received.
 			started := time.Now()
 			for i := 0; i < 30; i++ {
 				time.Sleep(1 * time.Second)
-				for _, gotPrefix := range tc.RightPeer.Import[IPv6Unicast].Prefixes() {
+				for _, gotPrefix := range tc.RightPeer.Import[tc.Family].Prefixes() {
 					t.Logf("Right server received prefix %v from left server", gotPrefix)
 					if gotPrefix == wantPrefix {
 						// Success!
