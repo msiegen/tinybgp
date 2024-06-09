@@ -73,6 +73,19 @@ func ConfigureListener(address, password string) func(_ net.Listener) error {
 		if !ok {
 			return errors.New("not a tcp listener")
 		}
+		ip := l.Addr().(*net.TCPAddr).IP
+		switch {
+		case t.Addr.Family == unix.AF_INET6 && ip.To4() == nil:
+			// The provided address and the listening socket are both IPv6.
+		case t.Addr.Family == unix.AF_INET && ip.To4() != nil:
+			// The provided address and the listening socket are both IPv4.
+		default:
+			// The provided address and the listening socket are of different address
+			// families. This would normally yield an invalid argument error, which
+			// we'll suppress to make it easier to use a single bgp.Server with
+			// multiple listeners in a dual stack environment.
+			return nil
+		}
 		c, err := l.SyscallConn()
 		if err != nil {
 			return err
