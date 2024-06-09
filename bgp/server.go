@@ -51,7 +51,6 @@ type Server struct {
 	Logger Logger
 
 	mu           sync.Mutex
-	initOnce     sync.Once
 	listeners    []net.Listener
 	peers        []*Peer
 	dynamicPeers map[*Peer]struct{}
@@ -196,22 +195,26 @@ func (s *Server) start(l net.Listener) error {
 	if l != nil {
 		s.listeners = append(s.listeners, l)
 	}
-	var startPeerErr error
-	s.initOnce.Do(func() {
-		s.running = true
-		s.dynamicPeers = map[*Peer]struct{}{}
-		s.serverClosed = make(chan struct{})
-		s.peersStopped = make(chan struct{})
+	if s.running {
 		for _, p := range s.peers {
-			if err := s.startPeer(p); err != nil {
-				// Only keep the first error.
-				if startPeerErr == nil {
-					startPeerErr = err
+			if p.ConfigureListener != nil {
+				if err := p.ConfigureListener(l); err != nil {
+					return err
 				}
 			}
 		}
-	})
-	return startPeerErr
+		return nil
+	}
+	s.running = true
+	s.dynamicPeers = map[*Peer]struct{}{}
+	s.serverClosed = make(chan struct{})
+	s.peersStopped = make(chan struct{})
+	for _, p := range s.peers {
+		if err := s.startPeer(p); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Serve runs the BGP protocol. A listener is optional, and multiple listeners
