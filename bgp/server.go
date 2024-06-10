@@ -111,8 +111,8 @@ func (s *Server) removeDynamicPeer(p *Peer) {
 }
 
 func (s *Server) matchPeer(conn net.Conn) (*Peer, error) {
-	localAddr := addrFromNetAddr(conn.LocalAddr())
-	remoteAddr := addrFromNetAddr(conn.RemoteAddr())
+	localAddr, _ := addrFromNetAddr(conn.LocalAddr())
+	remoteAddr, remotePort := addrFromNetAddr(conn.RemoteAddr())
 	if !localAddr.IsValid() || !remoteAddr.IsValid() {
 		return nil, errors.New("unsupported peer address type")
 	}
@@ -151,6 +151,7 @@ func (s *Server) matchPeer(conn net.Conn) (*Peer, error) {
 		return nil, err
 	}
 	p.Addr = remoteAddr
+	p.Port = remotePort
 	p.Passive = true
 	p.LocalAddr = localAddr
 	p.dynamic = true
