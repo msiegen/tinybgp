@@ -19,12 +19,13 @@ import (
 	"net/netip"
 )
 
-func addrFromNetAddr(addr net.Addr) netip.Addr {
+// addrFromNetAddr extracts the IP and port from a *net.TCPAddr.
+func addrFromNetAddr(addr net.Addr) (netip.Addr, int) {
 	switch a := addr.(type) {
 	case *net.TCPAddr:
 		aa, _ := netip.AddrFromSlice(a.IP)
-		return aa
+		return aa, a.Port
 	default:
-		return netip.Addr{}
+		return netip.Addr{}, 0
 	}
 }
