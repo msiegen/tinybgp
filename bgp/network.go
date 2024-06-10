@@ -57,13 +57,13 @@ func (n *Network) RemovePath(peer netip.Addr) {
 			s := slices.Delete(n.allPaths, i, i+1)
 			n.allPaths[len(s)] = Path{} // for garbage collection
 			n.allPaths = s
-			break
+			if len(n.allPaths) == 0 {
+				n.allPaths = nil
+			}
+			n.allPathsVersion += 1
+			return
 		}
 	}
-	if len(n.allPaths) == 0 {
-		n.allPaths = nil
-	}
-	n.allPathsVersion += 1
 }
 
 // BestPaths returns the best way to reach this network, and a generation number

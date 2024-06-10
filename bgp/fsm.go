@@ -31,6 +31,9 @@ import (
 )
 
 const (
+	// state_BGP_FSM_ERROR is an additional state in the FSM that is used to
+	// handle errors.
+	state_BGP_FSM_ERROR = bgp.FSMState(98)
 	// state_BGP_FSM_TERMINATE is an additional state in the FSM that is used as a
 	// signal to terminate the run loop.
 	state_BGP_FSM_TERMINATE = bgp.FSMState(99)
@@ -52,6 +55,8 @@ func formatState(s bgp.FSMState) string {
 		return "OPENCONFIRM"
 	case bgp.BGP_FSM_ESTABLISHED:
 		return "ESTABLISHED"
+	case state_BGP_FSM_ERROR:
+		return "ERROR"
 	case state_BGP_FSM_TERMINATE:
 		return "TERMINATE"
 	default:
@@ -79,6 +84,14 @@ type session struct {
 	// withdrawn from the peer. Withdrawn networks are only tracked as long as
 	// they remain in the local RIB.
 	Sent, Withdrawn map[RouteFamily]map[netip.Prefix]int64
+	// RecvDone is initialized when the receive loop starts and closed when the
+	// receive loop terminates. It provides a synchronization signal for session
+	// teardown to ensure that cleanup doesn't run while the receive loop might
+	// still be inserting routes into the table.
+	RecvDone <-chan struct{}
+	// Cleared is true after any received routes have been cleared out of the
+	// local table.
+	Cleared bool
 }
 
 // initCache initializes the cache of which paths have been sent to the peer.
@@ -130,11 +143,8 @@ func (f *fsm) setState(s bgp.FSMState) {
 }
 
 func (f *fsm) setStateError(peer *Peer, e error) {
-	nextState := bgp.BGP_FSM_IDLE
-	if peer.dynamic {
-		nextState = state_BGP_FSM_TERMINATE
-	}
-	f.server.logf("BGP peer %v %v->%v with error: %v", f.session.PeerName, formatState(f.state), formatState(nextState), e)
+	nextState := state_BGP_FSM_ERROR
+	f.server.logf("BGP peer %v %v->%v: %v", f.session.PeerName, formatState(f.state), formatState(nextState), e)
 	f.setStateWithoutLog(nextState)
 }
 
@@ -707,6 +717,9 @@ func (f *fsm) processUpdate(peerAddr netip.Addr, importFilters []Filter, m *bgp.
 		// happen if our import and export tables are configured differently.
 		return
 	}
+	for _, prefix := range withdrawnPrefixes {
+		rib.Network(prefix).RemovePath(peerAddr)
+	}
 	for _, prefix := range updatedPrefixes {
 		p := Path{
 			Peer:        peerAddr,
@@ -725,14 +738,14 @@ func (f *fsm) processUpdate(peerAddr netip.Addr, importFilters []Filter, m *bgp.
 		//f.server.logf("Installing %v with %v", prefix, p)
 		rib.Network(prefix).AddPath(p)
 	}
-	// TODO: Also process withdrawals. Might need to remove these by their peer
-	// rather than constructing the full original Path and searching for that.
 }
 
 // recvLoop launches a background goroutine to handle incomming messages.
-func (f *fsm) recvLoop(c net.Conn, peerAddr netip.Addr, importFilters []Filter, holdTime time.Duration, notifyC chan<- notification) <-chan error {
+func (f *fsm) recvLoop(c net.Conn, peerAddr netip.Addr, importFilters []Filter, holdTime time.Duration, notifyC chan<- notification) (<-chan error, <-chan struct{}) {
 	errC := make(chan error, 1)
-	go func(errC chan<- error) {
+	doneC := make(chan struct{})
+	go func(errC chan<- error, doneC chan<- struct{}) {
+		defer close(doneC)
 		deadline := time.Now().Add(holdTime)
 		for {
 			msg, err := fsmRecvMessage(c, deadline)
@@ -767,8 +780,21 @@ func (f *fsm) recvLoop(c net.Conn, peerAddr netip.Addr, importFilters []Filter, 
 				return
 			}
 		}
-	}(errC)
-	return errC
+	}(errC, doneC)
+	return errC, doneC
+}
+
+// removePaths removes all paths from the specified peer.
+func (f *fsm) removePaths(peerAddr netip.Addr) {
+	for rf, rib := range f.peer.Import {
+		if !f.session.RouteFamilies[rf] {
+			// Skip route families not previously negotiated with the peer.
+			continue
+		}
+		for _, prefix := range rib.Prefixes() {
+			rib.Network(prefix).RemovePath(peerAddr)
+		}
+	}
 }
 
 // run executes the BGP state machine.
@@ -911,7 +937,8 @@ func (f *fsm) run(peer *Peer) {
 			f.session.initCache()
 			f.session.setLocalIP(bgpConn)
 			notifyC, sendErrC := f.sendLoop(bgpConn)
-			recvErrC := f.recvLoop(bgpConn, peer.Addr, peer.ImportFilters, holdTime, notifyC)
+			recvErrC, recvDoneC := f.recvLoop(bgpConn, peer.Addr, peer.ImportFilters, holdTime, notifyC)
+			f.session.RecvDone = recvDoneC
 			select {
 			case err := <-sendErrC:
 				if err != nil {
@@ -947,13 +974,27 @@ func (f *fsm) run(peer *Peer) {
 			}
 			bgpConn.Close() // ignore errors
 
+		case state_BGP_FSM_ERROR:
+			if f.session.RecvDone != nil {
+				<-f.session.RecvDone // wait for receive loop to terminate
+				f.removePaths(peer.Addr)
+				f.session.Cleared = true
+			}
+			nextState := bgp.BGP_FSM_IDLE
+			if peer.dynamic {
+				nextState = state_BGP_FSM_TERMINATE
+			}
+			f.setState(nextState)
+
 		case state_BGP_FSM_TERMINATE:
 			if peer.dynamic {
 				f.server.removeDynamicPeer(peer)
 			}
-			// TODO: When a connection ends either due to an error above or a
-			// requested termination here, make sure to withdraw that peer's routes
-			// from the RIB.
+			if f.session.RecvDone != nil && !f.session.Cleared {
+				<-f.session.RecvDone // wait for receive loop to terminate
+				f.removePaths(peer.Addr)
+				f.session.Cleared = true
+			}
 			close(f.doneC)
 			return
 
