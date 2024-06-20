@@ -60,3 +60,16 @@ func (t *Table) Prefixes() []netip.Prefix {
 	}
 	return t.prefixes
 }
+
+// hasPrefix returns whether the prefix is in the table. It's an optimization
+// for the FSM to avoid allocating a *Network for withdrawn prefixes that were
+// never inserted in the first place (e.g. due to filters).
+func (t *Table) hasPrefix(p netip.Prefix) bool {
+	if t == nil {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	_, ok := t.networks[p]
+	return ok
+}
