@@ -536,13 +536,6 @@ func (f *fsm) sendUpdates(c net.Conn) (bool, error) {
 				continue
 			}
 			bp := bestPaths[0]
-			if bp.Contains(f.session.PeerASN) {
-				//f.server.logf("Not sending %v to %v because that would cause a loop", prefix, f.session.PeerName)
-				if err := withdraw(prefix, version, "new best path forms a loop"); err != nil {
-					return false, err
-				}
-				continue
-			}
 			for _, filter := range f.exportFilters {
 				if err := filter(prefix, &bp); err != nil {
 					if err := withdraw(prefix, version, fmt.Sprintf("export filter failed: %v", err)); err != nil {
@@ -718,8 +711,11 @@ func (f *fsm) processUpdate(peerAddr netip.Addr, importFilters []Filter, m *bgp.
 		return
 	}
 	for _, prefix := range withdrawnPrefixes {
-		rib.Network(prefix).RemovePath(peerAddr)
+		if rib.hasPrefix(prefix) {
+			rib.Network(prefix).RemovePath(peerAddr)
+		}
 	}
+L:
 	for _, prefix := range updatedPrefixes {
 		p := Path{
 			Peer:        peerAddr,
@@ -732,7 +728,12 @@ func (f *fsm) processUpdate(peerAddr netip.Addr, importFilters []Filter, m *bgp.
 				if !errors.Is(err, ErrDiscard) {
 					f.server.logf("Not importing %v from peer %v due to error: %v", prefix, f.session.PeerName, err)
 				}
-				continue
+				// If a prefix was previously accepted but should now be filtered,
+				// remove it from the table.
+				if rib.hasPrefix(prefix) {
+					rib.Network(prefix).RemovePath(peerAddr)
+				}
+				continue L
 			}
 		}
 		//f.server.logf("Installing %v with %v", prefix, p)
