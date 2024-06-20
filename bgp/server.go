@@ -52,7 +52,7 @@ type Server struct {
 
 	mu           sync.Mutex
 	listeners    []net.Listener
-	peers        []*Peer
+	peers        map[netip.Addr]*Peer
 	dynamicPeers map[*Peer]struct{}
 	running      bool
 	closed       bool
@@ -92,15 +92,37 @@ func (s *Server) startPeer(p *Peer) error {
 // is called. Peers that are added after the first call to Serve will
 // immediately have their state machine start running.
 func (s *Server) AddPeer(p *Peer) error {
+	if !p.Addr.IsValid() {
+		return fmt.Errorf("invalid peer address: %v", p.Addr)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
 		return errors.New("cannot add peer to closed server")
 	}
-	s.peers = append(s.peers, p)
+	if s.peers == nil {
+		s.peers = map[netip.Addr]*Peer{}
+	}
+	s.peers[p.Addr] = p
 	if s.running {
 		return s.startPeer(p)
 	}
+	return nil
+}
+
+// RemovePeer removes a peer.
+func (s *Server) RemovePeer(peer netip.Addr) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return errors.New("cannot remove peer from closed server")
+	}
+	p, ok := s.peers[peer]
+	if !ok {
+		return fmt.Errorf("peer not found: %v", peer)
+	}
+	p.stop()
+	delete(s.peers, peer)
 	return nil
 }
 
