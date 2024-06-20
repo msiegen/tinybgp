@@ -100,6 +100,9 @@ func (s *Server) AddPeer(p *Peer) error {
 	if s.closed {
 		return errors.New("cannot add peer to closed server")
 	}
+	if s.peers[p.Addr] != nil {
+		return fmt.Errorf("duplicate peer: %v", p.Addr)
+	}
 	if s.peers == nil {
 		s.peers = map[netip.Addr]*Peer{}
 	}
@@ -117,8 +120,8 @@ func (s *Server) RemovePeer(peer netip.Addr) error {
 	if s.closed {
 		return errors.New("cannot remove peer from closed server")
 	}
-	p, ok := s.peers[peer]
-	if !ok {
+	p := s.peers[peer]
+	if p == nil {
 		return fmt.Errorf("peer not found: %v", peer)
 	}
 	p.stop()
