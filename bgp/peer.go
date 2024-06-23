@@ -18,10 +18,15 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"slices"
 	"strconv"
 	"syscall"
 
 	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
+)
+
+var (
+	noExportCommunity = NewCommunity(uint32(bgp.COMMUNITY_NO_EXPORT))
 )
 
 // A Filter is a function that runs upon import or export of a path.
@@ -72,12 +77,14 @@ type Peer struct {
 	// peer. See the documentation on Import for usage details.
 	Export map[RouteFamily]*Table
 
-	// ImportFilters run for each path received from a peer before it is inserted
-	// into the import table.
-	ImportFilters []Filter
+	// ImportFilter decides whether to import a path into the import table and
+	// optionally modifies it. If not provided, the DefaultImportFilter method
+	// is used.
+	ImportFilter Filter
 
-	// ExportFilters run for each path to be announced to a peer.
-	ExportFilters []Filter
+	// ExportFilter decides whether to export a path to the peer and optionally
+	// modifies it. If not provided, the DefaultExportFilter method is used.
+	ExportFilter Filter
 
 	// Timers holds optional parameters to control the hold time and keepalive of
 	// the BGP session.
@@ -141,13 +148,13 @@ func (p *Peer) start(s *Server) error {
 		return errors.New("tried to start the same peer twice")
 	}
 	p.fsm = &fsm{
-		server:        s,
-		peer:          p,
-		timers:        newTimers(p.Timers),
-		exportFilters: p.ExportFilters,
-		acceptC:       make(chan net.Conn, 1),
-		stopC:         make(chan struct{}),
-		doneC:         make(chan struct{}),
+		server:       s,
+		peer:         p,
+		timers:       newTimers(p.Timers),
+		exportFilter: p.exportFilter,
+		acceptC:      make(chan net.Conn, 1),
+		stopC:        make(chan struct{}),
+		doneC:        make(chan struct{}),
 	}
 	go p.fsm.run(p)
 	return nil
@@ -155,4 +162,40 @@ func (p *Peer) start(s *Server) error {
 
 func (p *Peer) stop() {
 	p.fsm.stop()
+}
+
+// DefaultImportFilter is the default filter when no ImportFilter is provided.
+// It discards routes that contain the local ASN in their AS path.
+func (p *Peer) DefaultImportFilter(prefix netip.Prefix, path *Path) error {
+	if slices.Contains(path.ASPath, p.fsm.server.ASN) {
+		return ErrDiscard
+	}
+	return nil
+}
+
+func (p *Peer) importFilter(prefix netip.Prefix, path *Path) error {
+	if p.ImportFilter != nil {
+		return p.ImportFilter(prefix, path)
+	}
+	return p.DefaultImportFilter(prefix, path)
+}
+
+// DefaultExportFilter is the default filter when no ExportFilter is provided.
+// It prepends the local ASN to the AS path, changes the nexthop to the local
+// IP of the peering session, and discards routes bearing the "no export" well
+// known community.
+func (p *Peer) DefaultExportFilter(prefix netip.Prefix, path *Path) error {
+	if slices.Contains(path.Communities, noExportCommunity) {
+		return ErrDiscard
+	}
+	path.ASPath = append([]uint32{p.fsm.server.ASN}, path.ASPath...)
+	path.Nexthop = p.fsm.session.LocalIP
+	return nil
+}
+
+func (p *Peer) exportFilter(prefix netip.Prefix, path *Path) error {
+	if p.ExportFilter != nil {
+		return p.ExportFilter(prefix, path)
+	}
+	return p.DefaultExportFilter(prefix, path)
 }
