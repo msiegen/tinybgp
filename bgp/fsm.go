@@ -677,6 +677,8 @@ func (f *fsm) processUpdate(peerAddr netip.Addr, importFilters []Filter, m *bgp.
 			}
 		case *bgp.PathAttributeMpUnreachNLRI:
 			// Withdrawal for IPv6 or IPv4 via an IPv6 nexthop
+			afi = a.AFI
+			safi = a.SAFI
 			for _, addr := range a.Value {
 				if prefix, err := netip.ParsePrefix(addr.String()); err == nil {
 					withdrawnPrefixes = append(withdrawnPrefixes, prefix)

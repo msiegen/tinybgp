@@ -17,6 +17,7 @@ package bgp
 import (
 	"net/netip"
 	"sync"
+	"time"
 
 	"golang.org/x/exp/maps"
 )
@@ -72,4 +73,32 @@ func (t *Table) hasPrefix(p netip.Prefix) bool {
 	defer t.mu.Unlock()
 	_, ok := t.networks[p]
 	return ok
+}
+
+// Watch returns an iterator over all routes in the tables. The iterator yields
+// every route once on startup, and then waits for changes and yields only the
+// updated or withdrawn routes.
+func Watch(t ...*Table) func(func(netip.Prefix, []Path) bool) {
+	// TODO: Change return type to iter.Seq2[netip.Prefix, []Path] in Go 1.23.
+	last := map[netip.Prefix]int64{}
+	return func(yield func(netip.Prefix, []Path) bool) {
+		for {
+			for _, t := range t {
+				t.mu.Lock()
+				for p, n := range t.networks {
+					t.mu.Unlock()
+					bestPaths, version := n.BestPaths()
+					if version != last[p] {
+						last[p] = version
+						if !yield(p, bestPaths) {
+							return
+						}
+					}
+					t.mu.Lock()
+				}
+				t.mu.Unlock()
+			}
+			time.Sleep(1 * time.Second)
+		}
+	}
 }
