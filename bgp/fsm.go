@@ -113,10 +113,10 @@ func (s *session) setLocalIP(c net.Conn) {
 }
 
 type fsm struct {
-	server        *Server
-	peer          *Peer
-	timers        *Timers
-	exportFilters []Filter
+	server       *Server
+	peer         *Peer
+	timers       *Timers
+	exportFilter Filter
 	// acceptC is used to pass incomming connections from the Server.acceptLoop
 	// to fsm.run.
 	acceptC chan net.Conn
@@ -421,36 +421,21 @@ func newIPAddrPrefix(n netip.Prefix) (bgp.AddrPrefixInterface, error) {
 func (f *fsm) sendUpdate(c net.Conn, network netip.Prefix, pth Path) error {
 	// We can safely send 4-byte AS numbers here because validateOpen enforced
 	// that the remote end supports it.
-	asv := make([]uint32, len(pth.ASPath)+1)
-	asv[0] = f.server.ASN
-	for i, as := range pth.ASPath {
-		asv[i+1] = as
-	}
-	asp := bgp.NewAs4PathParam(bgp.BGP_ASPATH_ATTR_TYPE_SEQ, asv)
+	asp := bgp.NewAs4PathParam(bgp.BGP_ASPATH_ATTR_TYPE_SEQ, pth.ASPath)
 	ap, err := newIPAddrPrefix(network)
 	if err != nil {
 		return err
 	}
-	nh := f.session.LocalIP
-	if pth.Nexthop.IsValid() {
-		// TODO: This works for locally originated routes, which start out with an
-		// invalid nexthop that can then be modified by an export filter. But does
-		// it work when routes are imported into the table? If those have a valid
-		// nexthop (which seems likely), then we'll need a better way to handle the
-		// override. Maybe this logic can move into sendUpdates where the export
-		// filter is applied... but we may need to expand the filter interface to
-		// accomodate the cases of 1) keep the original nexthop for route server
-		// cases, 2) replace the nexthop with the local IP, 3) replace the nexthop
-		// with something else determined by the filtering logic.
-		nh = pth.Nexthop
+	if !pth.Nexthop.IsValid() {
+		return fmt.Errorf("invalid nexthop for prefix %v", network)
 	}
 	a := make([]bgp.PathAttributeInterface, 0, 4)
 	var nlri []*bgp.IPAddrPrefix
-	if network.Addr().Is4() && nh.Is4() {
+	if network.Addr().Is4() && pth.Nexthop.Is4() {
 		// For IPv4 routed via an IPv4 nexthop, use the the NLRI field in the UPDATE
 		// message and populate the mandatory NEXT_HOP attribute as required by
 		// https://datatracker.ietf.org/doc/html/rfc4271.
-		a = append(a, bgp.NewPathAttributeNextHop(nh.String()))
+		a = append(a, bgp.NewPathAttributeNextHop(pth.Nexthop.String()))
 		nlri = []*bgp.IPAddrPrefix{
 			bgp.NewIPAddrPrefix(uint8(network.Bits()), network.Addr().String()),
 		}
@@ -459,7 +444,7 @@ func (f *fsm) sendUpdate(c net.Conn, network netip.Prefix, pth Path) error {
 		// attribute as required by https://datatracker.ietf.org/doc/html/rfc4760.
 		// According to https://datatracker.ietf.org/doc/html/rfc7606#section-5.1
 		// this should be the first attribute.
-		a = append(a, bgp.NewPathAttributeMpReachNLRI(nh.String(), []bgp.AddrPrefixInterface{ap}))
+		a = append(a, bgp.NewPathAttributeMpReachNLRI(pth.Nexthop.String(), []bgp.AddrPrefixInterface{ap}))
 	}
 	a = append(a,
 		bgp.NewPathAttributeOrigin(bgp.BGP_ORIGIN_ATTR_TYPE_INCOMPLETE),
@@ -536,13 +521,11 @@ func (f *fsm) sendUpdates(c net.Conn) (bool, error) {
 				continue
 			}
 			bp := bestPaths[0]
-			for _, filter := range f.exportFilters {
-				if err := filter(prefix, &bp); err != nil {
-					if err := withdraw(prefix, version, fmt.Sprintf("export filter failed: %v", err)); err != nil {
-						return false, err
-					}
-					continue
+			if err := f.exportFilter(prefix, &bp); err != nil {
+				if err := withdraw(prefix, version, fmt.Sprintf("export filter failed: %v", err)); err != nil {
+					return false, err
 				}
+				continue
 			}
 			f.server.logf("Announcing %v to peer %v", prefix, f.session.PeerName)
 			if err := f.sendUpdate(c, prefix, bp); err != nil {
@@ -635,7 +618,7 @@ func (f *fsm) sendLoop(c net.Conn) (chan<- notification, <-chan error) {
 	return notifyC, errC
 }
 
-func (f *fsm) processUpdate(peerAddr netip.Addr, importFilters []Filter, m *bgp.BGPUpdate) {
+func (f *fsm) processUpdate(peerAddr netip.Addr, importFilter Filter, m *bgp.BGPUpdate) {
 	var (
 		afi               uint16
 		safi              uint8
@@ -717,7 +700,6 @@ func (f *fsm) processUpdate(peerAddr netip.Addr, importFilters []Filter, m *bgp.
 			rib.Network(prefix).RemovePath(peerAddr)
 		}
 	}
-L:
 	for _, prefix := range updatedPrefixes {
 		p := Path{
 			Peer:        peerAddr,
@@ -725,18 +707,16 @@ L:
 			ASPath:      asPath,
 			Communities: communities,
 		}
-		for _, filter := range importFilters {
-			if err := filter(prefix, &p); err != nil {
-				if !errors.Is(err, ErrDiscard) {
-					f.server.logf("Not importing %v from peer %v due to error: %v", prefix, f.session.PeerName, err)
-				}
-				// If a prefix was previously accepted but should now be filtered,
-				// remove it from the table.
-				if rib.hasPrefix(prefix) {
-					rib.Network(prefix).RemovePath(peerAddr)
-				}
-				continue L
+		if err := importFilter(prefix, &p); err != nil {
+			if !errors.Is(err, ErrDiscard) {
+				f.server.logf("Not importing %v from peer %v due to error: %v", prefix, f.session.PeerName, err)
 			}
+			// If a prefix was previously accepted but should now be filtered,
+			// remove it from the table.
+			if rib.hasPrefix(prefix) {
+				rib.Network(prefix).RemovePath(peerAddr)
+			}
+			continue
 		}
 		//f.server.logf("Installing %v with %v", prefix, p)
 		rib.Network(prefix).AddPath(p)
@@ -744,7 +724,7 @@ L:
 }
 
 // recvLoop launches a background goroutine to handle incomming messages.
-func (f *fsm) recvLoop(c net.Conn, peerAddr netip.Addr, importFilters []Filter, holdTime time.Duration, notifyC chan<- notification) (<-chan error, <-chan struct{}) {
+func (f *fsm) recvLoop(c net.Conn, peerAddr netip.Addr, importFilter Filter, holdTime time.Duration, notifyC chan<- notification) (<-chan error, <-chan struct{}) {
 	errC := make(chan error, 1)
 	doneC := make(chan struct{})
 	go func(errC chan<- error, doneC chan<- struct{}) {
@@ -770,7 +750,7 @@ func (f *fsm) recvLoop(c net.Conn, peerAddr netip.Addr, importFilters []Filter, 
 			switch m := msg.Body.(type) {
 			case *bgp.BGPUpdate:
 				deadline = time.Now().Add(holdTime)
-				f.processUpdate(peerAddr, importFilters, m)
+				f.processUpdate(peerAddr, importFilter, m)
 			case *bgp.BGPKeepAlive:
 				deadline = time.Now().Add(holdTime)
 			case *bgp.BGPNotification:
@@ -940,7 +920,7 @@ func (f *fsm) run(peer *Peer) {
 			f.session.initCache()
 			f.session.setLocalIP(bgpConn)
 			notifyC, sendErrC := f.sendLoop(bgpConn)
-			recvErrC, recvDoneC := f.recvLoop(bgpConn, peer.Addr, peer.ImportFilters, holdTime, notifyC)
+			recvErrC, recvDoneC := f.recvLoop(bgpConn, peer.Addr, peer.importFilter, holdTime, notifyC)
 			f.session.RecvDone = recvDoneC
 			select {
 			case err := <-sendErrC:
