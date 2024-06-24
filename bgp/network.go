@@ -79,12 +79,8 @@ func (n *Network) BestPaths() ([]Path, int64) {
 			n.generation += 1
 		} else {
 			SortPaths(n.allPaths)
+			n.generation += 1
 			// TODO: If there are multiple shortest paths, return them all for ECMP.
-			// Will need to make sure that a change to the *number* of best paths
-			// causes the generation to increment.
-			if len(n.bestPaths) == 0 || !n.bestPaths[0].Equal(n.allPaths[0]) {
-				n.generation += 1
-			}
 			n.bestPaths = n.allPaths[:1]
 		}
 		n.bestPathsVersion = n.allPathsVersion
