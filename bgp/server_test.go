@@ -294,18 +294,16 @@ func TestServer(t *testing.T) {
 
 			// Export one path from the left server.
 			wantPrefix := netip.MustParsePrefix(tc.Announce)
-			tc.LeftPeer.Export[tc.Family].Network(wantPrefix).AddPath(Path{})
+			tc.LeftPeer.Export[tc.Family].Network(wantPrefix).AddPath(Attributes{})
 
 			// Watch the right server until the path is received.
 			started := time.Now()
+			table := tc.RightPeer.Import[tc.Family]
 			for i := 0; i < 30; i++ {
 				time.Sleep(1 * time.Second)
-				for _, gotPrefix := range tc.RightPeer.Import[tc.Family].Prefixes() {
-					t.Logf("Right server received prefix %v from left server", gotPrefix)
-					if gotPrefix == wantPrefix {
-						// Success!
-						return
-					}
+				if table.Network(wantPrefix).hasPath() {
+					// Success!
+					return
 				}
 			}
 			t.Errorf("Right server still did not get prefix %v from left server after %v", wantPrefix, time.Since(started))

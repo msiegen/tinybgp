@@ -25,8 +25,12 @@ an idiomatic Go API and exposes hooks for you to bring your own observability.
 We're just starting out! The current focus is on building a minimum viable
 implementation of the core logic, and on designing a simple but general API that
 can achieve long-term stability. In this phase
-[v0 semantics](https://go.dev/doc/modules/version-numbers) apply and we may make
-backwards-incompatible API changes.
+[v0 semantics](https://go.dev/doc/modules/version-numbers) apply and we *will*
+make backwards-incompatible API changes.
+
+TinyBGP requires the [Rangefunc Experiment](https://go.dev/wiki/RangefuncExperiment)
+in Go 1.22. To enable it, set `GOEXPERIMENT=rangefunc` in your build
+environment. This requirement will go away upon upgrading to Go 1.23.
 
 If that sounds good, it's possible to build simple announce-only applications
 with TinyBGP today. Think something like [kube-vip](https://kube-vip.io/) or

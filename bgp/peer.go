@@ -18,7 +18,6 @@ import (
 	"errors"
 	"net"
 	"net/netip"
-	"slices"
 	"strconv"
 	"syscall"
 
@@ -29,16 +28,14 @@ var (
 	noExportCommunity = NewCommunity(uint32(bgp.COMMUNITY_NO_EXPORT))
 )
 
-// A Filter is a function that runs upon import or export of a path.
+// A Filter is a function that runs upon import or export of a route.
 //
-// Import filters always receive a new instance of a Path and may safely modify
-// it to apply local policy. Export filters receive a shallow copy of the Path
-// from the local table and may modify the values in it, but are responsible for
-// deep copying any reference types that they wish to modify themselves.
+// Filters may modify the attributes. This is commonly done on export to change
+// the nexthop to the local host.
 //
 // A filter may return ErrDiscard to terminate the evaluation of the filter
 // chain and prevent the path from being imported or exported.
-type Filter func(prefix netip.Prefix, p *Path) error
+type Filter func(nlri netip.Prefix, attrs *Attributes) error
 
 // ErrDiscard is returned by filters that have made an explicit decision to
 // discard a path.
@@ -77,12 +74,12 @@ type Peer struct {
 	// peer. See the documentation on Import for usage details.
 	Export map[RouteFamily]*Table
 
-	// ImportFilter decides whether to import a path into the import table and
+	// ImportFilter decides whether to import a route into the import table and
 	// optionally modifies it. If not provided, the DefaultImportFilter method
 	// is used.
 	ImportFilter Filter
 
-	// ExportFilter decides whether to export a path to the peer and optionally
+	// ExportFilter decides whether to export a route to the peer and optionally
 	// modifies it. If not provided, the DefaultExportFilter method is used.
 	ExportFilter Filter
 
@@ -166,36 +163,36 @@ func (p *Peer) stop() {
 
 // DefaultImportFilter is the default filter when no ImportFilter is provided.
 // It discards routes that contain the local ASN in their AS path.
-func (p *Peer) DefaultImportFilter(prefix netip.Prefix, path *Path) error {
-	if slices.Contains(path.ASPath, p.fsm.server.ASN) {
+func (p *Peer) DefaultImportFilter(nlri netip.Prefix, attrs *Attributes) error {
+	if attrs.PathContains(p.fsm.server.ASN) {
 		return ErrDiscard
 	}
 	return nil
 }
 
-func (p *Peer) importFilter(prefix netip.Prefix, path *Path) error {
+func (p *Peer) importFilter(nlri netip.Prefix, attrs *Attributes) error {
 	if p.ImportFilter != nil {
-		return p.ImportFilter(prefix, path)
+		return p.ImportFilter(nlri, attrs)
 	}
-	return p.DefaultImportFilter(prefix, path)
+	return p.DefaultImportFilter(nlri, attrs)
 }
 
 // DefaultExportFilter is the default filter when no ExportFilter is provided.
 // It prepends the local ASN to the AS path, changes the nexthop to the local
 // IP of the peering session, and discards routes bearing the "no export" well
 // known community.
-func (p *Peer) DefaultExportFilter(prefix netip.Prefix, path *Path) error {
-	if slices.Contains(path.Communities, noExportCommunity) {
+func (p *Peer) DefaultExportFilter(prefix netip.Prefix, attrs *Attributes) error {
+	if attrs.Communities()[noExportCommunity] {
 		return ErrDiscard
 	}
-	path.ASPath = append([]uint32{p.fsm.server.ASN}, path.ASPath...)
-	path.Nexthop = p.fsm.session.LocalIP
+	attrs.Prepend(p.fsm.server.ASN)
+	attrs.Nexthop = p.fsm.session.LocalIP
 	return nil
 }
 
-func (p *Peer) exportFilter(prefix netip.Prefix, path *Path) error {
+func (p *Peer) exportFilter(nlri netip.Prefix, attrs *Attributes) error {
 	if p.ExportFilter != nil {
-		return p.ExportFilter(prefix, path)
+		return p.ExportFilter(nlri, attrs)
 	}
-	return p.DefaultExportFilter(prefix, path)
+	return p.DefaultExportFilter(nlri, attrs)
 }

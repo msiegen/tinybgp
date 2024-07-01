@@ -15,88 +15,155 @@
 package bgp
 
 import (
+	"iter"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
-
-	"golang.org/x/exp/maps"
 )
 
-// A Table is a set of networks that each have a distinct CIDR prefix.
+// A Table is a set of networks that each have a distinct NLRI.
 type Table struct {
-	mu              sync.Mutex
-	networks        map[netip.Prefix]*Network
-	networksVersion int64
-	prefixes        []netip.Prefix
-	prefixesVersion int64
+	version  atomic.Int64
+	mu       sync.Mutex
+	networks map[netip.Prefix]*Network
 }
 
-// Network returns the network for the given prefix, creating an entry in the
-// table if one does not already exist.
-func (t *Table) Network(p netip.Prefix) *Network {
+// Network returns a single network. The first time it's called for a given
+// NLRI, it creates an entry in the table with no paths.
+func (t *Table) Network(nlri netip.Prefix) *Network {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if n := t.networks[p]; n != nil {
+	if n := t.networks[nlri]; n != nil {
 		return n
 	}
 	if t.networks == nil {
 		t.networks = map[netip.Prefix]*Network{}
 	}
-	n := &Network{}
-	t.networks[p] = n
-	t.networksVersion += 1
+	n := &Network{version: &t.version}
+	t.networks[nlri] = n
 	return n
 }
 
-// Prefixes returns the prefixes of all the networks in the table.
-func (t *Table) Prefixes() []netip.Prefix {
-	if t == nil {
-		return nil
+// Networks returns an iterator over the networks.
+func (t *Table) Networks() iter.Seq2[netip.Prefix, *Network] {
+	return func(yield func(netip.Prefix, *Network) bool) {
+		t.mu.Lock()
+		for p, n := range t.networks {
+			t.mu.Unlock()
+			if n.hasPath() {
+				if !yield(p, n) {
+					return
+				}
+			}
+			t.mu.Lock()
+		}
+		t.mu.Unlock()
 	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.prefixesVersion != t.networksVersion {
-		t.prefixes = maps.Keys(t.networks)
-		t.prefixesVersion = t.networksVersion
-	}
-	return t.prefixes
 }
 
-// hasPrefix returns whether the prefix is in the table. It's an optimization
-// for the FSM to avoid allocating a *Network for withdrawn prefixes that were
-// never inserted in the first place (e.g. due to filters).
-func (t *Table) hasPrefix(p netip.Prefix) bool {
+// hasNetwork returns whether the NLRI is in the table. It's an optimization
+// for the FSM to avoid allocating a *Network when processing a withdraw for a
+// route that was never inserted due to import filters.
+func (t *Table) hasNetwork(nlri netip.Prefix) bool {
 	if t == nil {
 		return false
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	_, ok := t.networks[p]
-	return ok
+	n, ok := t.networks[nlri]
+	if !ok {
+		return false
+	}
+	return n.hasPath()
 }
 
-// Watch returns an iterator over all routes in the tables. The iterator yields
-// every route once on startup, and then waits for changes and yields only the
-// updated or withdrawn routes.
-func Watch(t ...*Table) func(func(netip.Prefix, []Path) bool) {
-	// TODO: Change return type to iter.Seq2[netip.Prefix, []Path] in Go 1.23.
-	last := map[netip.Prefix]int64{}
-	return func(yield func(netip.Prefix, []Path) bool) {
-		for {
-			for _, t := range t {
-				t.mu.Lock()
-				for p, n := range t.networks {
-					t.mu.Unlock()
-					bestPaths, version := n.BestPaths()
-					if version != last[p] {
-						last[p] = version
-						if !yield(p, bestPaths) {
+// BestRoutes returns an iterator that yields the best route for each network.
+func (t *Table) BestRoutes() iter.Seq2[netip.Prefix, Attributes] {
+	return func(yield func(netip.Prefix, Attributes) bool) {
+		t.mu.Lock()
+		for p, n := range t.networks {
+			t.mu.Unlock()
+			if attrs, ok := n.bestPath(); ok {
+				if !yield(p, attrs) {
+					return
+				}
+			}
+			t.mu.Lock()
+		}
+		t.mu.Unlock()
+	}
+}
+
+// updatedRoutes returns an iterator that yields only the routes which changed
+// since the last call. State is tracked across calls through the tracked and
+// suppressed maps.
+func (t *Table) updatedRoutes(export Filter, tracked map[netip.Prefix]Attributes, suppressed map[netip.Prefix]struct{}) iter.Seq2[netip.Prefix, Attributes] {
+	return func(yield func(netip.Prefix, Attributes) bool) {
+		// Announce new and updated routes.
+		for nlri, attrs := range t.BestRoutes() {
+			// Check if we previously yielded the same route.
+			oldAttrs, isTracked := tracked[nlri]
+			if isTracked && attrs == oldAttrs {
+				continue // Route is unchanged.
+			}
+			// We did not previously yield this route. Decide whether we should,
+			// and cache the decision for next time.
+			tracked[nlri] = attrs
+			if err := export(nlri, &attrs); err != nil {
+				// Export filter rejected the route.
+				if isTracked {
+					if _, ok := suppressed[nlri]; !ok {
+						// We previously yielded a route for this NLRI, so need to withdraw.
+						if !yield(nlri, Attributes{}) {
 							return
 						}
 					}
-					t.mu.Lock()
 				}
-				t.mu.Unlock()
+				suppressed[nlri] = struct{}{}
+				continue // Move on to the next route.
+			}
+			// The export filter allowed the route.
+			delete(suppressed, nlri)
+			if !yield(nlri, attrs) {
+				return
+			}
+		}
+		// Withdraw removed routes.
+		for nlri := range tracked {
+			if !t.hasNetwork(nlri) {
+				if !yield(nlri, Attributes{}) {
+					return
+				}
+				delete(tracked, nlri)
+				delete(suppressed, nlri)
+			}
+		}
+	}
+}
+
+// WatchBest returns an infinite iterator that yields the best route for each
+// network in each table. The disappearance of a route is signaled with a zero
+// value Attributes.
+func WatchBest(t ...*Table) iter.Seq2[netip.Prefix, Attributes] {
+	if len(t) == 0 {
+		return nil
+	}
+	tracked := make([]map[netip.Prefix]Attributes, len(t))
+	suppressed := make([]map[netip.Prefix]struct{}, len(t))
+	for i := 0; i < len(t); i++ {
+		tracked[i] = map[netip.Prefix]Attributes{}
+		suppressed[i] = map[netip.Prefix]struct{}{}
+	}
+	filter := func(nlri netip.Prefix, attrs *Attributes) error { return nil }
+	return func(yield func(netip.Prefix, Attributes) bool) {
+		for {
+			for i, t := range t {
+				for nlri, attrs := range t.updatedRoutes(filter, tracked[i], suppressed[i]) {
+					if !yield(nlri, attrs) {
+						return
+					}
+				}
 			}
 			time.Sleep(1 * time.Second)
 		}
