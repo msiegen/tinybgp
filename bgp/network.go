@@ -16,74 +16,72 @@ package bgp
 
 import (
 	"net/netip"
+	"slices"
 	"sync"
-
-	"golang.org/x/exp/slices"
+	"sync/atomic"
 )
 
 // A Network represents a range of addresses with a common prefix that can be
 // reached by zero or more distinct paths.
 type Network struct {
-	mu               sync.Mutex
-	allPaths         []Path
-	allPathsVersion  int64
-	bestPaths        []Path
-	bestPathsVersion int64
-	generation       int64
+	version      *atomic.Int64
+	mu           sync.Mutex
+	paths        []Attributes
+	pathsVersion int64
+	sorted       bool
 }
 
-// AddPath adds a path by which this network can be reached. It replaces any
-// previously added path from the same peer.
-func (n *Network) AddPath(p Path) {
+// AddPath adds a path by which this network can be reached.
+// It replaces any previously added path from the same peer.
+func (n *Network) AddPath(a Attributes) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	n.allPathsVersion += 1
-	for i, oldPath := range n.allPaths {
-		if oldPath.Peer == p.Peer {
-			n.allPaths[i] = p
+	for i, old := range n.paths {
+		if old.Peer == a.Peer {
+			// We previously got a path from this same peer. Replace it.
+			if a == old {
+				// Path is unchanged. No replacement needed.
+				return
+			}
+			n.paths[i] = a
+			n.pathsVersion = n.version.Add(1)
+			n.sorted = false
 			return
 		}
 	}
-	n.allPaths = append(n.allPaths, p)
+	// First time we've seen this path. Add it.
+	n.paths = append(n.paths, a)
+	n.pathsVersion = n.version.Add(1)
+	n.sorted = false
 }
 
-// RemovePath removes a path via the specified peer. It is safe to call even if
-// no path from the peer is present.
+// RemovePath removes the path via the specified peer.
+// It is safe to call even if no path from the peer is present.
 func (n *Network) RemovePath(peer netip.Addr) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	for i, item := range n.allPaths {
-		if item.Peer == peer {
-			s := slices.Delete(n.allPaths, i, i+1)
-			n.allPaths[len(s)] = Path{} // for garbage collection
-			n.allPaths = s
-			if len(n.allPaths) == 0 {
-				n.allPaths = nil
-			}
-			n.allPathsVersion += 1
-			return
-		}
-	}
+	n.paths = slices.DeleteFunc(n.paths, func(old Attributes) bool {
+		return old.Peer == peer
+	})
 }
 
-// BestPaths returns the best way to reach this network, and a generation number
-// that increments any time the best path has changed. An empty slice is
-// returned if no path is known, and multiple paths may be returned if several
-// are equally good.
-func (n *Network) BestPaths() ([]Path, int64) {
+// bestPath returns the best path to the network, or false if no path exists.
+func (n *Network) bestPath() (Attributes, bool) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	if n.bestPathsVersion != n.allPathsVersion {
-		if len(n.allPaths) == 0 {
-			n.bestPaths = nil
-			n.generation += 1
-		} else {
-			SortPaths(n.allPaths)
-			n.generation += 1
-			// TODO: If there are multiple shortest paths, return them all for ECMP.
-			n.bestPaths = n.allPaths[:1]
-		}
-		n.bestPathsVersion = n.allPathsVersion
+	if len(n.paths) == 0 {
+		return Attributes{}, false
 	}
-	return n.bestPaths, n.generation
+	if !n.sorted {
+		sortAttributes(n.paths)
+		n.sorted = true
+	}
+	return n.paths[0], true
+}
+
+// hasPath returns whether at least one path is present.
+func (n *Network) hasPath() bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return len(n.paths) != 0
 }

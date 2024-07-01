@@ -15,6 +15,7 @@
 package bgp
 
 import (
+	"fmt"
 	"net/netip"
 
 	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
@@ -31,8 +32,13 @@ func NewRouteFamily(afi uint16, safi uint8) RouteFamily {
 	return RouteFamily(afi)<<16 | RouteFamily(safi)
 }
 
-func (a RouteFamily) Split() (uint16, uint8) {
-	return uint16(a >> 16), uint8(a & 0xffff)
+func (f RouteFamily) Split() (uint16, uint8) {
+	return uint16(f >> 16), uint8(f & 0xffff)
+}
+
+func (f RouteFamily) String() string {
+	afi, safi := f.Split()
+	return fmt.Sprintf("%v:%v", afi, safi)
 }
 
 func RouteFamilyFor(a netip.Addr) RouteFamily {

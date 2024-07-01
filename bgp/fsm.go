@@ -80,10 +80,12 @@ type session struct {
 	// LocalIP holds a copy of the local IP address, used to populate the
 	// nexthop field in UPDATE messages.
 	LocalIP netip.Addr
-	// Sent and Withdrawn hold the version of each network last sent to or
-	// withdrawn from the peer. Withdrawn networks are only tracked as long as
-	// they remain in the local RIB.
-	Sent, Withdrawn map[RouteFamily]map[netip.Prefix]int64
+	// Tracked holds the routes considered for export to this peer. It includes
+	// the routes that were announced to the peer as well as the ones suppressed
+	// by an export filter.
+	Tracked map[RouteFamily]map[netip.Prefix]Attributes
+	// Suppressed holds the routes that were rejected by an export filter.
+	Suppressed map[RouteFamily]map[netip.Prefix]struct{}
 	// RecvDone is initialized when the receive loop starts and closed when the
 	// receive loop terminates. It provides a synchronization signal for session
 	// teardown to ensure that cleanup doesn't run while the receive loop might
@@ -97,12 +99,11 @@ type session struct {
 // initCache initializes the cache of which paths have been sent to the peer.
 // It must be called upon connection establishment.
 func (s *session) initCache() {
-	s.Sent = map[RouteFamily]map[netip.Prefix]int64{}
-	s.Withdrawn = map[RouteFamily]map[netip.Prefix]int64{}
-	for _, m := range []map[RouteFamily]map[netip.Prefix]int64{s.Sent, s.Withdrawn} {
-		for rf := range s.RouteFamilies {
-			m[rf] = map[netip.Prefix]int64{}
-		}
+	s.Tracked = map[RouteFamily]map[netip.Prefix]Attributes{}
+	s.Suppressed = map[RouteFamily]map[netip.Prefix]struct{}{}
+	for rf := range s.RouteFamilies {
+		s.Tracked[rf] = map[netip.Prefix]Attributes{}
+		s.Suppressed[rf] = map[netip.Prefix]struct{}{}
 	}
 }
 
@@ -418,24 +419,24 @@ func newIPAddrPrefix(n netip.Prefix) (bgp.AddrPrefixInterface, error) {
 }
 
 // sendUpdate sends an UPDATE announcing a new or changed path.
-func (f *fsm) sendUpdate(c net.Conn, network netip.Prefix, pth Path) error {
+func (f *fsm) sendUpdate(c net.Conn, network netip.Prefix, attrs Attributes) error {
 	// We can safely send 4-byte AS numbers here because validateOpen enforced
 	// that the remote end supports it.
-	asp := bgp.NewAs4PathParam(bgp.BGP_ASPATH_ATTR_TYPE_SEQ, pth.ASPath)
+	asp := bgp.NewAs4PathParam(bgp.BGP_ASPATH_ATTR_TYPE_SEQ, attrs.Path())
 	ap, err := newIPAddrPrefix(network)
 	if err != nil {
 		return err
 	}
-	if !pth.Nexthop.IsValid() {
+	if !attrs.Nexthop.IsValid() {
 		return fmt.Errorf("invalid nexthop for prefix %v", network)
 	}
 	a := make([]bgp.PathAttributeInterface, 0, 4)
 	var nlri []*bgp.IPAddrPrefix
-	if network.Addr().Is4() && pth.Nexthop.Is4() {
+	if network.Addr().Is4() && attrs.Nexthop.Is4() {
 		// For IPv4 routed via an IPv4 nexthop, use the the NLRI field in the UPDATE
 		// message and populate the mandatory NEXT_HOP attribute as required by
 		// https://datatracker.ietf.org/doc/html/rfc4271.
-		a = append(a, bgp.NewPathAttributeNextHop(pth.Nexthop.String()))
+		a = append(a, bgp.NewPathAttributeNextHop(attrs.Nexthop.String()))
 		nlri = []*bgp.IPAddrPrefix{
 			bgp.NewIPAddrPrefix(uint8(network.Bits()), network.Addr().String()),
 		}
@@ -444,16 +445,17 @@ func (f *fsm) sendUpdate(c net.Conn, network netip.Prefix, pth Path) error {
 		// attribute as required by https://datatracker.ietf.org/doc/html/rfc4760.
 		// According to https://datatracker.ietf.org/doc/html/rfc7606#section-5.1
 		// this should be the first attribute.
-		a = append(a, bgp.NewPathAttributeMpReachNLRI(pth.Nexthop.String(), []bgp.AddrPrefixInterface{ap}))
+		a = append(a, bgp.NewPathAttributeMpReachNLRI(attrs.Nexthop.String(), []bgp.AddrPrefixInterface{ap}))
 	}
 	a = append(a,
 		bgp.NewPathAttributeOrigin(bgp.BGP_ORIGIN_ATTR_TYPE_INCOMPLETE),
 		bgp.NewPathAttributeAsPath([]bgp.AsPathParamInterface{asp}),
 	)
-	if len(pth.Communities) != 0 {
-		cs := make([]uint32, len(pth.Communities))
-		for i, c := range pth.Communities {
-			cs[i] = c.Uint32()
+	cm := attrs.Communities()
+	if len(cm) != 0 {
+		cs := make([]uint32, 0, len(cm))
+		for c := range cm {
+			cs = append(cs, c.Uint32())
 		}
 		a = append(a, bgp.NewPathAttributeCommunities(cs))
 	}
@@ -484,67 +486,26 @@ func (f *fsm) sendWithdraw(c net.Conn, network netip.Prefix) error {
 // call to sendUpdates.
 func (f *fsm) sendUpdates(c net.Conn) (bool, error) {
 	var alive bool
-	for rf, rib := range f.peer.Export {
+	for rf, table := range f.peer.Export {
 		if !f.session.RouteFamilies[rf] {
 			// Skip route families not supported by the peer.
 			continue
 		}
-
-		sent := f.session.Sent[rf]
-		withdrawn := f.session.Withdrawn[rf]
-
-		withdraw := func(prefix netip.Prefix, version int64, reason string) error {
-			if _, ok := sent[prefix]; ok {
-				f.server.logf("Withdrawing %v from peer %v because %v", prefix, f.session.PeerName, reason)
-				if err := f.sendWithdraw(c, prefix); err != nil {
-					return err
-				}
-				alive = true
-				delete(sent, prefix)
-			}
-			if version < 0 {
-				delete(withdrawn, prefix)
-			} else {
-				withdrawn[prefix] = version
-			}
-			return nil
-		}
-
-		// Send updates for any new or changed networks.
-		for _, prefix := range rib.Prefixes() {
-			n := rib.Network(prefix)
-			bestPaths, version := n.BestPaths()
-			if len(bestPaths) == 0 {
-				continue
-			}
-			if sent[prefix] == version || withdrawn[prefix] == version {
-				continue
-			}
-			bp := bestPaths[0]
-			if err := f.exportFilter(prefix, &bp); err != nil {
-				if err := withdraw(prefix, version, fmt.Sprintf("export filter failed: %v", err)); err != nil {
+		tracked := f.session.Tracked[rf]
+		suppressed := f.session.Suppressed[rf]
+		for nlri, attrs := range table.updatedRoutes(f.exportFilter, tracked, suppressed) {
+			if attrs.Nexthop.IsValid() {
+				f.server.logf("Announcing %v to peer %v", nlri, f.session.PeerName)
+				if err := f.sendUpdate(c, nlri, attrs); err != nil {
 					return false, err
 				}
-				continue
-			}
-			f.server.logf("Announcing %v to peer %v", prefix, f.session.PeerName)
-			if err := f.sendUpdate(c, prefix, bp); err != nil {
-				return false, err
+			} else {
+				f.server.logf("Withdrawing %v from peer %v", nlri, f.session.PeerName)
+				if err := f.sendWithdraw(c, nlri); err != nil {
+					return false, err
+				}
 			}
 			alive = true
-			sent[prefix] = version
-			delete(withdrawn, prefix)
-		}
-
-		// Send withdraws for any removed networks.
-		for prefix := range sent {
-			n := rib.Network(prefix)
-			if bestPaths, _ := n.BestPaths(); len(bestPaths) != 0 {
-				continue
-			}
-			if err := withdraw(prefix, -1, "network went away"); err != nil {
-				return false, err
-			}
 		}
 	}
 	return alive, nil
@@ -620,28 +581,28 @@ func (f *fsm) sendLoop(c net.Conn) (chan<- notification, <-chan error) {
 
 func (f *fsm) processUpdate(peerAddr netip.Addr, importFilter Filter, m *bgp.BGPUpdate) {
 	var (
-		afi               uint16
-		safi              uint8
-		nexthop           netip.Addr
-		updatedPrefixes   []netip.Prefix
-		withdrawnPrefixes []netip.Prefix
-		asPath            []uint32
-		communities       []Community
+		afi       uint16
+		safi      uint8
+		nexthop   netip.Addr
+		updated   []netip.Prefix
+		withdrawn []netip.Prefix
+		asPath    []uint32
 	)
-	for _, prefix := range m.NLRI {
+	communities := map[Community]bool{}
+	for _, nlri := range m.NLRI {
 		// Announcement for IPv4 via an IPv4 nexthop
-		addr, _ := netip.AddrFromSlice(prefix.Prefix)
-		if p := netip.PrefixFrom(addr, int(prefix.Length)); p.IsValid() {
-			updatedPrefixes = append(updatedPrefixes, p)
+		addr, _ := netip.AddrFromSlice(nlri.Prefix)
+		if p := netip.PrefixFrom(addr, int(nlri.Length)); p.IsValid() {
+			updated = append(updated, p)
 		}
 		afi = bgp.AFI_IP
 		safi = bgp.SAFI_UNICAST
 	}
-	for _, prefix := range m.WithdrawnRoutes {
+	for _, nlri := range m.WithdrawnRoutes {
 		// Withdrawal for IPv4 via an IPv4 nexthop
-		addr, _ := netip.AddrFromSlice(prefix.Prefix)
-		if p := netip.PrefixFrom(addr, int(prefix.Length)); p.IsValid() {
-			withdrawnPrefixes = append(withdrawnPrefixes, p)
+		addr, _ := netip.AddrFromSlice(nlri.Prefix)
+		if p := netip.PrefixFrom(addr, int(nlri.Length)); p.IsValid() {
+			withdrawn = append(withdrawn, p)
 		}
 		afi = bgp.AFI_IP
 		safi = bgp.SAFI_UNICAST
@@ -654,8 +615,8 @@ func (f *fsm) processUpdate(peerAddr netip.Addr, importFilter Filter, m *bgp.BGP
 			safi = a.SAFI
 			nexthop, _ = netip.AddrFromSlice(a.Nexthop)
 			for _, addr := range a.Value {
-				if prefix, err := netip.ParsePrefix(addr.String()); err == nil {
-					updatedPrefixes = append(updatedPrefixes, prefix)
+				if nlri, err := netip.ParsePrefix(addr.String()); err == nil {
+					updated = append(updated, nlri)
 				}
 			}
 		case *bgp.PathAttributeMpUnreachNLRI:
@@ -663,8 +624,8 @@ func (f *fsm) processUpdate(peerAddr netip.Addr, importFilter Filter, m *bgp.BGP
 			afi = a.AFI
 			safi = a.SAFI
 			for _, addr := range a.Value {
-				if prefix, err := netip.ParsePrefix(addr.String()); err == nil {
-					withdrawnPrefixes = append(withdrawnPrefixes, prefix)
+				if nlri, err := netip.ParsePrefix(addr.String()); err == nil {
+					withdrawn = append(withdrawn, nlri)
 				}
 			}
 		case *bgp.PathAttributeNextHop:
@@ -675,11 +636,9 @@ func (f *fsm) processUpdate(peerAddr netip.Addr, importFilter Filter, m *bgp.BGP
 			}
 		case *bgp.PathAttributeCommunities:
 			if len(a.Value) != 0 {
-				cs := make([]Community, len(a.Value))
-				for i, v := range a.Value {
-					cs[i] = NewCommunity(v)
+				for _, v := range a.Value {
+					communities[NewCommunity(v)] = true
 				}
-				communities = cs
 			}
 		}
 	}
@@ -689,37 +648,37 @@ func (f *fsm) processUpdate(peerAddr netip.Addr, importFilter Filter, m *bgp.BGP
 		// behaved peer should not send them.
 		return
 	}
-	rib := f.peer.Import[rf]
-	if rib == nil {
+	table := f.peer.Import[rf]
+	if table == nil {
 		// Ignore route families that don't exist in our import table. This can
 		// happen if our import and export tables are configured differently.
 		return
 	}
-	for _, prefix := range withdrawnPrefixes {
-		if rib.hasPrefix(prefix) {
-			rib.Network(prefix).RemovePath(peerAddr)
+	for _, nlri := range withdrawn {
+		if table.hasNetwork(nlri) {
+			table.Network(nlri).RemovePath(peerAddr)
 		}
 	}
-	for _, prefix := range updatedPrefixes {
-		p := Path{
-			Peer:        peerAddr,
-			Nexthop:     nexthop,
-			ASPath:      asPath,
-			Communities: communities,
+	for _, nlri := range updated {
+		attrs := Attributes{
+			Peer:    peerAddr,
+			Nexthop: nexthop,
 		}
-		if err := importFilter(prefix, &p); err != nil {
+		attrs.SetPath(asPath)
+		attrs.SetCommunities(communities)
+		if err := importFilter(nlri, &attrs); err != nil {
 			if !errors.Is(err, ErrDiscard) {
-				f.server.logf("Not importing %v from peer %v due to error: %v", prefix, f.session.PeerName, err)
+				f.server.logf("Not importing %v from peer %v due to error: %v", nlri, f.session.PeerName, err)
 			}
-			// If a prefix was previously accepted but should now be filtered,
+			// If an NLRI was previously accepted but should now be filtered,
 			// remove it from the table.
-			if rib.hasPrefix(prefix) {
-				rib.Network(prefix).RemovePath(peerAddr)
+			if table.hasNetwork(nlri) {
+				table.Network(nlri).RemovePath(peerAddr)
 			}
 			continue
 		}
-		//f.server.logf("Installing %v with %v", prefix, p)
-		rib.Network(prefix).AddPath(p)
+		//f.server.logf("Installing %v with %v", nlri, attrs)
+		table.Network(nlri).AddPath(attrs)
 	}
 }
 
@@ -769,13 +728,13 @@ func (f *fsm) recvLoop(c net.Conn, peerAddr netip.Addr, importFilter Filter, hol
 
 // removePaths removes all paths from the specified peer.
 func (f *fsm) removePaths(peerAddr netip.Addr) {
-	for rf, rib := range f.peer.Import {
+	for rf, table := range f.peer.Import {
 		if !f.session.RouteFamilies[rf] {
 			// Skip route families not previously negotiated with the peer.
 			continue
 		}
-		for _, prefix := range rib.Prefixes() {
-			rib.Network(prefix).RemovePath(peerAddr)
+		for _, n := range table.Networks() {
+			n.RemovePath(peerAddr)
 		}
 	}
 }
