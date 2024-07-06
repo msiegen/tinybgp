@@ -65,6 +65,20 @@ func (n *Network) RemovePath(peer netip.Addr) {
 	})
 }
 
+// allPaths returns a copy of all paths to the network.
+func (n *Network) allPaths() []Attributes {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if len(n.paths) == 0 {
+		return nil
+	}
+	if !n.sorted {
+		sortAttributes(n.paths)
+		n.sorted = true
+	}
+	return slices.Clone(n.paths)
+}
+
 // bestPath returns the best path to the network, or false if no path exists.
 func (n *Network) bestPath() (Attributes, bool) {
 	n.mu.Lock()
