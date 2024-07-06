@@ -78,6 +78,23 @@ func (t *Table) hasNetwork(nlri netip.Prefix) bool {
 	return n.hasPath()
 }
 
+// AllRoutes returns an iterator that yields all the routes for every network.
+func (t *Table) AllRoutes() iter.Seq2[netip.Prefix, Attributes] {
+	return func(yield func(netip.Prefix, Attributes) bool) {
+		t.mu.Lock()
+		for p, n := range t.networks {
+			t.mu.Unlock()
+			for _, attrs := range n.allPaths() {
+				if !yield(p, attrs) {
+					return
+				}
+			}
+			t.mu.Lock()
+		}
+		t.mu.Unlock()
+	}
+}
+
 // BestRoutes returns an iterator that yields the best route for each network.
 func (t *Table) BestRoutes() iter.Seq2[netip.Prefix, Attributes] {
 	return func(yield func(netip.Prefix, Attributes) bool) {
