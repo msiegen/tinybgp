@@ -47,20 +47,20 @@ func TestNetworkPaths(t *testing.T) {
 	}
 	if best, ok := n.bestPath(); !ok {
 		t.Errorf("bestPath returned ok %v, want %v", false, true)
-	} else if best != a2 {
-		t.Errorf("bestPath returned %v, want %v", best, a2)
+	} else if best.Value() != a2 {
+		t.Errorf("bestPath returned %v, want %v", best.Value(), a2)
 	}
 	n.AddPath(a1)
 	if best, ok := n.bestPath(); !ok {
 		t.Errorf("bestPath returned ok %v, want %v", false, true)
-	} else if best != a1 {
-		t.Errorf("bestPath returned %v, want %v", best, a1)
+	} else if best.Value() != a1 {
+		t.Errorf("bestPath returned %v, want %v", best.Value(), a1)
 	}
 	n.RemovePath(p1)
 	if best, ok := n.bestPath(); !ok {
 		t.Errorf("bestPath returned ok %v, want %v", false, true)
-	} else if best != a2 {
-		t.Errorf("bestPath returned %v, want %v", best, a2)
+	} else if best.Value() != a2 {
+		t.Errorf("bestPath returned %v, want %v", best.Value(), a2)
 	}
 	n.RemovePath(p2)
 	if _, ok := n.bestPath(); ok {

@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"net/netip"
 	"testing"
+	"unique"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -185,8 +186,16 @@ func TestSortAttributes(t *testing.T) {
 		{a3, a2, a1},
 	} {
 		t.Run(fmt.Sprintf("%v", i), func(t *testing.T) {
-			sortAttributes(tc)
-			if diff := cmp.Diff(want, tc, opts...); diff != "" {
+			var as []unique.Handle[Attributes]
+			for _, a := range tc {
+				as = append(as, unique.Make(a))
+			}
+			sortAttributes(as)
+			var got []Attributes
+			for _, a := range as {
+				got = append(got, a.Value())
+			}
+			if diff := cmp.Diff(want, got, opts...); diff != "" {
 				t.Errorf("path mismatch (-want +got):\n%s", diff)
 			}
 		})
