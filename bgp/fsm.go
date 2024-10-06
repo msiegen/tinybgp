@@ -25,6 +25,7 @@ import (
 	"net"
 	"net/netip"
 	"time"
+	"unique"
 
 	"github.com/jpillora/backoff"
 	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
@@ -83,7 +84,7 @@ type session struct {
 	// Tracked holds the routes considered for export to this peer. It includes
 	// the routes that were announced to the peer as well as the ones suppressed
 	// by an export filter.
-	Tracked map[RouteFamily]map[netip.Prefix]Attributes
+	Tracked map[RouteFamily]map[netip.Prefix]unique.Handle[Attributes]
 	// Suppressed holds the routes that were rejected by an export filter.
 	Suppressed map[RouteFamily]map[netip.Prefix]struct{}
 	// RecvDone is initialized when the receive loop starts and closed when the
@@ -99,10 +100,10 @@ type session struct {
 // initCache initializes the cache of which paths have been sent to the peer.
 // It must be called upon connection establishment.
 func (s *session) initCache() {
-	s.Tracked = map[RouteFamily]map[netip.Prefix]Attributes{}
+	s.Tracked = map[RouteFamily]map[netip.Prefix]unique.Handle[Attributes]{}
 	s.Suppressed = map[RouteFamily]map[netip.Prefix]struct{}{}
 	for rf := range s.RouteFamilies {
-		s.Tracked[rf] = map[netip.Prefix]Attributes{}
+		s.Tracked[rf] = map[netip.Prefix]unique.Handle[Attributes]{}
 		s.Suppressed[rf] = map[netip.Prefix]struct{}{}
 	}
 }

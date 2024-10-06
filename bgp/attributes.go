@@ -20,6 +20,7 @@ import (
 	"net/netip"
 	"sort"
 	"strings"
+	"unique"
 )
 
 // Attributes is the information associated with a route.
@@ -148,12 +149,14 @@ func (a *Attributes) SetCommunities(cs map[Community]bool) {
 // sortAttributes sorts a slice of attributes by their local preference
 // (highest value first). If the local preference between two paths is equal,
 // the one with the shorter AS path sorts first.
-func sortAttributes(as []Attributes) {
+func sortAttributes(as []unique.Handle[Attributes]) {
 	sort.SliceStable(as, func(i, j int) bool {
-		if as[i].LocalPref == as[j].LocalPref {
-			return as[i].PathLen() < as[j].PathLen()
+		ai := as[i].Value()
+		aj := as[j].Value()
+		if ai.LocalPref == aj.LocalPref {
+			return ai.PathLen() < aj.PathLen()
 		}
-		return as[i].LocalPref > as[j].LocalPref
+		return ai.LocalPref > aj.LocalPref
 	})
 }
 

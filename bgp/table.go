@@ -20,6 +20,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unique"
 )
 
 // A Table is a set of networks that each have a distinct NLRI.
@@ -85,7 +86,7 @@ func (t *Table) AllRoutes() iter.Seq2[netip.Prefix, Attributes] {
 		for p, n := range t.networks {
 			t.mu.Unlock()
 			for _, attrs := range n.allPaths() {
-				if !yield(p, attrs) {
+				if !yield(p, attrs.Value()) {
 					return
 				}
 			}
@@ -95,9 +96,9 @@ func (t *Table) AllRoutes() iter.Seq2[netip.Prefix, Attributes] {
 	}
 }
 
-// BestRoutes returns an iterator that yields the best route for each network.
-func (t *Table) BestRoutes() iter.Seq2[netip.Prefix, Attributes] {
-	return func(yield func(netip.Prefix, Attributes) bool) {
+// bestRoutes returns an iterator that yields the best route for each network.
+func (t *Table) bestRoutes() iter.Seq2[netip.Prefix, unique.Handle[Attributes]] {
+	return func(yield func(netip.Prefix, unique.Handle[Attributes]) bool) {
 		t.mu.Lock()
 		for p, n := range t.networks {
 			t.mu.Unlock()
@@ -112,23 +113,24 @@ func (t *Table) BestRoutes() iter.Seq2[netip.Prefix, Attributes] {
 	}
 }
 
-// updatedRoutes returns an iterator that yields only the routes which changed
+// updatedRoutes returns an iterator that yields only the routes that changed
 // since the last call. State is tracked across calls through the tracked and
 // suppressed maps.
-func (t *Table) updatedRoutes(export Filter, tracked map[netip.Prefix]Attributes, suppressed map[netip.Prefix]struct{}) iter.Seq2[netip.Prefix, Attributes] {
+func (t *Table) updatedRoutes(export Filter, tracked map[netip.Prefix]unique.Handle[Attributes], suppressed map[netip.Prefix]struct{}) iter.Seq2[netip.Prefix, Attributes] {
 	return func(yield func(netip.Prefix, Attributes) bool) {
 		// Announce new and updated routes.
-		for nlri, attrs := range t.BestRoutes() {
+		for nlri, attrs := range t.bestRoutes() {
 			// Check if we previously yielded the same route.
 			oldAttrs, isTracked := tracked[nlri]
 			if isTracked && attrs == oldAttrs {
 				continue // Route is unchanged.
 			}
 			// We did not previously yield this route. Decide whether we should,
-			// and cache the decision for next time.
+			// and cache the decision for later reuse.
 			tracked[nlri] = attrs
-			if err := export(nlri, &attrs); err != nil {
-				// Export filter rejected the route.
+			attrsValue := attrs.Value()
+			if err := export(nlri, &attrsValue); err != nil {
+				// The export filter rejected the route.
 				if isTracked {
 					if _, ok := suppressed[nlri]; !ok {
 						// We previously yielded a route for this NLRI, so need to withdraw.
@@ -142,7 +144,7 @@ func (t *Table) updatedRoutes(export Filter, tracked map[netip.Prefix]Attributes
 			}
 			// The export filter allowed the route.
 			delete(suppressed, nlri)
-			if !yield(nlri, attrs) {
+			if !yield(nlri, attrsValue) {
 				return
 			}
 		}
@@ -166,10 +168,10 @@ func WatchBest(t ...*Table) iter.Seq2[netip.Prefix, Attributes] {
 	if len(t) == 0 {
 		return nil
 	}
-	tracked := make([]map[netip.Prefix]Attributes, len(t))
+	tracked := make([]map[netip.Prefix]unique.Handle[Attributes], len(t))
 	suppressed := make([]map[netip.Prefix]struct{}, len(t))
 	for i := 0; i < len(t); i++ {
-		tracked[i] = map[netip.Prefix]Attributes{}
+		tracked[i] = map[netip.Prefix]unique.Handle[Attributes]{}
 		suppressed[i] = map[netip.Prefix]struct{}{}
 	}
 	filter := func(nlri netip.Prefix, attrs *Attributes) error { return nil }
