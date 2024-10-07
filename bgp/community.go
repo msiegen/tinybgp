@@ -15,6 +15,7 @@
 package bgp
 
 import (
+	"encoding/binary"
 	"fmt"
 	"strconv"
 	"strings"
@@ -65,7 +66,7 @@ func (c Community) String() string {
 	return fmt.Sprintf("%v:%v", c.Origin, c.Value)
 }
 
-// ExtendedCommunity BGP Extended Community as defined in
+// ExtendedCommunity is a BGP Extended Community as defined in
 // https://datatracker.ietf.org/doc/html/rfc4360.
 //
 // NOTE: Support for extended communities is experimental and subject to change.
@@ -79,15 +80,7 @@ func newExtendedCommunity(b []byte) (ExtendedCommunity, error) {
 	if len(b) != 8 {
 		return 0, fmt.Errorf("invalid length for extended community: got %v, want 8", len(b))
 	}
-	c := uint64(b[0])<<56 |
-		uint64(b[1])<<48 |
-		uint64(b[2])<<40 |
-		uint64(b[3])<<32 |
-		uint64(b[4])<<24 |
-		uint64(b[5])<<16 |
-		uint64(b[6])<<8 |
-		uint64(b[7])
-	return ExtendedCommunity(c), nil
+	return ExtendedCommunity(binary.BigEndian.Uint64(b)), nil
 }
 
 // type_ returns the high-order octet of the type field.
