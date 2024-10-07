@@ -104,3 +104,35 @@ func TestCommunityStringError(t *testing.T) {
 		})
 	}
 }
+
+func TestExtendedCommunity(t *testing.T) {
+	for _, tc := range []struct {
+		Input      []byte
+		Want       ExtendedCommunity
+		WantString string
+	}{
+		{
+			Input:      []byte{0x02, 0x02, 0x00, 0x01, 0xe2, 0x40, 0x03, 0xe9},
+			Want:       0x02020001e24003e9,
+			WantString: "rt:123456:1001",
+		},
+		{
+			Input:      []byte{0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x55, 0x77},
+			Want:       0x0003000000005577,
+			WantString: "soo:0:21879",
+		},
+	} {
+		t.Run(tc.WantString, func(t *testing.T) {
+			c, err := newExtendedCommunity(tc.Input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c != tc.Want {
+				t.Errorf("got value %16x, want %16x", c, tc.Want)
+			}
+			if got := c.String(); got != tc.WantString {
+				t.Errorf("got string %v, want %v", got, tc.WantString)
+			}
+		})
+	}
+}
