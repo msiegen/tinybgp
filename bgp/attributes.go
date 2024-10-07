@@ -40,6 +40,8 @@ type Attributes struct {
 	path string
 	// communities is the serialized set of communities.
 	communities string
+	// extendedCommunities is the serialized set of extended communities.
+	extendedCommunities string
 }
 
 func deserializePath(s string) []uint32 {
@@ -144,6 +146,51 @@ func serializeCommunities(cs map[Community]bool) string {
 // https://datatracker.ietf.org/doc/html/rfc1997.
 func (a *Attributes) SetCommunities(cs map[Community]bool) {
 	a.communities = serializeCommunities(cs)
+}
+
+func deserializeExtendedCommunities(s string) map[ExtendedCommunity]bool {
+	if s == "" {
+		return nil
+	}
+	b := []byte(s)
+	cs := map[ExtendedCommunity]bool{}
+	for i := 0; i < len(s)/8; i++ {
+		cs[ExtendedCommunity(binary.LittleEndian.Uint64(b[8*i:8*i+8]))] = true
+	}
+	return cs
+}
+
+// ExtendedCommunities returns the BGP communities as defined by
+// https://datatracker.ietf.org/doc/html/rfc4360.
+//
+// NOTE: This is experimental. See the ExtendedCommunity type for details.
+func (a *Attributes) ExtendedCommunities() map[ExtendedCommunity]bool {
+	return deserializeExtendedCommunities(a.extendedCommunities)
+}
+
+func serializeExtendedCommunities(cs map[ExtendedCommunity]bool) string {
+	sorted := make([]ExtendedCommunity, 0, len(cs))
+	for c, ok := range cs {
+		if ok {
+			sorted = append(sorted, c)
+		}
+	}
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i] < sorted[j]
+	})
+	b := make([]byte, 8*len(sorted))
+	for i, c := range sorted {
+		binary.LittleEndian.PutUint64(b[8*i:8*i+8], uint64(c))
+	}
+	return string(b)
+}
+
+// SetExtendedCommunities sets the BGP communities as defined by
+// https://datatracker.ietf.org/doc/html/rfc4360.
+//
+// NOTE: This is experimental. See the ExtendedCommunity type for details.
+func (a *Attributes) SetExtendedCommunities(cs map[ExtendedCommunity]bool) {
+	a.extendedCommunities = serializeExtendedCommunities(cs)
 }
 
 // sortAttributes sorts a slice of attributes by their local preference

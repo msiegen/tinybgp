@@ -590,6 +590,7 @@ func (f *fsm) processUpdate(peerAddr netip.Addr, importFilter Filter, m *bgp.BGP
 		asPath    []uint32
 	)
 	communities := map[Community]bool{}
+	extendedCommunities := map[ExtendedCommunity]bool{}
 	for _, nlri := range m.NLRI {
 		// Announcement for IPv4 via an IPv4 nexthop
 		addr, _ := netip.AddrFromSlice(nlri.Prefix)
@@ -636,9 +637,15 @@ func (f *fsm) processUpdate(peerAddr netip.Addr, importFilter Filter, m *bgp.BGP
 				asPath = append(asPath, ases.GetAS()...)
 			}
 		case *bgp.PathAttributeCommunities:
-			if len(a.Value) != 0 {
-				for _, v := range a.Value {
-					communities[NewCommunity(v)] = true
+			for _, v := range a.Value {
+				communities[NewCommunity(v)] = true
+			}
+		case *bgp.PathAttributeExtendedCommunities:
+			for _, v := range a.Value {
+				if b, err := v.Serialize(); err == nil { // if no error
+					if c, err := newExtendedCommunity(b); err == nil { // if no error
+						extendedCommunities[c] = true
+					}
 				}
 			}
 		}
@@ -667,6 +674,7 @@ func (f *fsm) processUpdate(peerAddr netip.Addr, importFilter Filter, m *bgp.BGP
 		}
 		attrs.SetPath(asPath)
 		attrs.SetCommunities(communities)
+		attrs.SetExtendedCommunities(extendedCommunities)
 		if err := importFilter(nlri, &attrs); err != nil {
 			if !errors.Is(err, ErrDiscard) {
 				f.server.logf("Not importing %v from peer %v due to error: %v", nlri, f.session.PeerName, err)
