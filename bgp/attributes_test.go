@@ -166,11 +166,11 @@ func TestAttributesCommunities(t *testing.T) {
 }
 
 func TestSortAttributes(t *testing.T) {
-	a1 := Attributes{LocalPref: 200}
+	a1 := Attributes{LocalPref: 200, HasLocalPref: true}
 	a1.SetPath([]uint32{1, 2, 3, 4, 5})
-	a2 := Attributes{LocalPref: 100}
+	a2 := Attributes{LocalPref: 100, HasLocalPref: true}
 	a2.SetPath([]uint32{10, 20})
-	a3 := Attributes{LocalPref: 100}
+	a3 := Attributes{}
 	a3.SetPath([]uint32{30, 40, 50})
 	want := []Attributes{a1, a2, a3}
 
