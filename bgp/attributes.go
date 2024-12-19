@@ -23,6 +23,12 @@ import (
 	"unique"
 )
 
+const (
+	// DefaultLocalPreference is the default value of the local preference
+	// for routes that do not specify one.
+	DefaultLocalPreference uint32 = 100
+)
+
 // Attributes is the information associated with a route.
 // Attributes are comparable and may be used as keys in a map.
 type Attributes struct {
@@ -32,9 +38,14 @@ type Attributes struct {
 	// sent. It's commonly equal to the peer address, but can differ e.g. if the
 	// peer is a route server.
 	Nexthop netip.Addr
-	// LocalPref specifies a priority for the route. Higher values mean the route
-	// is more preferred.
-	LocalPref int
+	// LocalPref, together with HasLocalPref, specifies a priority for the route.
+	// Higher values mean the route is more preferred. The local preference is
+	// used in best path computations and may be set by an import filter, but is
+	// not imported from or exported to peers (eBGP semantics).
+	LocalPref uint32
+	// HasLocalPref indicates whether LocalPref contains a valid local preference.
+	// When false, a default local preference of 100 is assumed.
+	HasLocalPref bool
 
 	// path is the serialized AS path.
 	path string
@@ -193,6 +204,15 @@ func (a *Attributes) SetExtendedCommunities(cs map[ExtendedCommunity]bool) {
 	a.extendedCommunities = serializeExtendedCommunities(cs)
 }
 
+// localPref returns the effective value of the local preference,
+// which may be the default value if no local preference is specified.
+func (a *Attributes) localPref() uint32 {
+	if a.HasLocalPref {
+		return a.LocalPref
+	}
+	return DefaultLocalPreference
+}
+
 // sortAttributes sorts a slice of attributes by their local preference
 // (highest value first). If the local preference between two paths is equal,
 // the one with the shorter AS path sorts first.
@@ -200,10 +220,10 @@ func sortAttributes(as []unique.Handle[Attributes]) {
 	sort.SliceStable(as, func(i, j int) bool {
 		ai := as[i].Value()
 		aj := as[j].Value()
-		if ai.LocalPref == aj.LocalPref {
-			return ai.PathLen() < aj.PathLen()
+		if ilp, jlp := ai.localPref(), aj.localPref(); ilp != jlp {
+			return ilp > jlp
 		}
-		return ai.LocalPref > aj.LocalPref
+		return ai.PathLen() < aj.PathLen()
 	})
 }
 
