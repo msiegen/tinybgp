@@ -56,7 +56,8 @@ type Peer struct {
 	LocalAddr netip.Addr
 
 	// ASN is the expected ASN of the peer.
-	// If present, it will be verified upon connection establishment.
+	// If present, it will be verified upon connection establishment and the
+	// default import filter will only accept routes with a matching first AS.
 	ASN uint32
 
 	// Import stores the network reachability information received from the peer.
@@ -162,8 +163,13 @@ func (p *Peer) stop() {
 }
 
 // DefaultImportFilter is the default filter when no ImportFilter is provided.
-// It discards routes that contain the local ASN in their AS path.
+// It discards routes if the AS path:
+//   - Contains the local ASN
+//   - Has a first AS not matching p.ASN (but if p.ASN==0, accept any first AS)
 func (p *Peer) DefaultImportFilter(nlri netip.Prefix, attrs *Attributes) error {
+	if p.ASN != 0 && p.ASN != attrs.First() {
+		return ErrDiscard
+	}
 	if attrs.PathContains(p.fsm.server.ASN) {
 		return ErrDiscard
 	}
