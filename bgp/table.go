@@ -133,13 +133,13 @@ func (t *Table) bestRoutes() iter.Seq2[netip.Prefix, unique.Handle[Attributes]] 
 // updatedRoutes returns an iterator that yields only the routes that changed
 // since the last call. State is tracked across calls through the tracked and
 // suppressed maps.
-func (t *Table) updatedRoutes(export Filter, tracked map[netip.Prefix]unique.Handle[Attributes], suppressed map[netip.Prefix]struct{}) iter.Seq2[netip.Prefix, Attributes] {
+func (t *Table) updatedRoutes(export Filter, tracked map[netip.Prefix]unique.Handle[Attributes], suppressed map[netip.Prefix]struct{}, reevaluate bool) iter.Seq2[netip.Prefix, Attributes] {
 	return func(yield func(netip.Prefix, Attributes) bool) {
 		// Announce new and updated routes.
 		for nlri, attrs := range t.bestRoutes() {
 			// Check if we previously yielded the same route.
 			oldAttrs, isTracked := tracked[nlri]
-			if isTracked && attrs == oldAttrs {
+			if !reevaluate && isTracked && attrs == oldAttrs {
 				continue // Route is unchanged.
 			}
 			// We did not previously yield this route. Decide whether we should,
@@ -195,7 +195,7 @@ func WatchBest(t ...*Table) iter.Seq2[netip.Prefix, Attributes] {
 	return func(yield func(netip.Prefix, Attributes) bool) {
 		for {
 			for i, t := range t {
-				for nlri, attrs := range t.updatedRoutes(filter, tracked[i], suppressed[i]) {
+				for nlri, attrs := range t.updatedRoutes(filter, tracked[i], suppressed[i], false) {
 					if !yield(nlri, attrs) {
 						return
 					}

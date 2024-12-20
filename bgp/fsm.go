@@ -488,7 +488,7 @@ func (f *fsm) sendWithdraw(c net.Conn, network netip.Prefix) error {
 
 // sendUpdates informs the peer of any paths that have changed since the last
 // call to sendUpdates.
-func (f *fsm) sendUpdates(c net.Conn) (bool, error) {
+func (f *fsm) sendUpdates(c net.Conn, reevaluate bool) (bool, error) {
 	var alive bool
 	for rf, table := range f.peer.Export {
 		if !f.session.RouteFamilies[rf] {
@@ -497,7 +497,7 @@ func (f *fsm) sendUpdates(c net.Conn) (bool, error) {
 		}
 		tracked := f.session.Tracked[rf]
 		suppressed := f.session.Suppressed[rf]
-		for nlri, attrs := range table.updatedRoutes(f.exportFilter, tracked, suppressed) {
+		for nlri, attrs := range table.updatedRoutes(f.exportFilter, tracked, suppressed, reevaluate) {
 			if attrs.Nexthop.IsValid() {
 				f.server.logf("Announcing %v to peer %v", nlri, f.session.PeerName)
 				if err := f.sendUpdate(c, nlri, attrs); err != nil {
@@ -543,17 +543,21 @@ func (f *fsm) sendLoop(c net.Conn) (chan<- notification, <-chan error) {
 	notifyC := make(chan notification, 2)
 	errC := make(chan error, 1)
 	go func(notifyC <-chan notification, errC chan<- error) {
+		version := f.peer.exportFilterVersion.Load()
 		var delay time.Duration
 		nextKeepAlive := time.Now().Add(f.timers.NextKeepAlive())
 		for {
 			select {
 			case <-time.After(delay):
 				delay = 1 * time.Second
-				ok, err := f.sendUpdates(c)
+				newVersion := f.peer.exportFilterVersion.Load()
+				reevaluate := newVersion != version
+				ok, err := f.sendUpdates(c, reevaluate)
 				if err != nil {
 					errC <- err
 					return
 				}
+				version = newVersion
 				if ok {
 					// We sent at least one update, so can reset the keepalive timer.
 					nextKeepAlive = time.Now().Add(f.timers.NextKeepAlive())
