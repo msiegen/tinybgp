@@ -38,14 +38,24 @@ type Attributes struct {
 	// sent. It's commonly equal to the peer address, but can differ e.g. if the
 	// peer is a route server.
 	Nexthop netip.Addr
-	// LocalPref, together with HasLocalPref, specifies a priority for the route.
-	// Higher values mean the route is more preferred. The local preference is
-	// used in best path computations and may be set by an import filter, but is
-	// not imported from or exported to peers (eBGP semantics).
+	// LocalPref, together with HasLocalPref, specifies a priority for the route
+	// that is considered prior to the AS path length. Higher values are more
+	// preferred. The local preference is used in best path computations and may
+	// be set by an import filter, but is not imported from or exported to peers
+	// (eBGP semantics).
 	LocalPref uint32
 	// HasLocalPref indicates whether LocalPref contains a valid local preference.
 	// When false, a default local preference of 100 is assumed.
 	HasLocalPref bool
+	// MED, the multi exit discriminator, together with HasMED, specifies a
+	// priority that is used to break a tie between two routes with the same AS
+	// path length and same first AS in the path. Lower values are more preferred.
+	// MED is imported from peers if they provide it, and cleared by the default
+	// export filter (eBGP semantics).
+	MED uint32
+	// HasMED indicates whether MED contains a valid multi exit discriminator.
+	// When false, a default value of 0 is assumed.
+	HasMED bool
 
 	// path is the serialized AS path.
 	path string
@@ -221,6 +231,14 @@ func (a *Attributes) localPref() uint32 {
 	return DefaultLocalPreference
 }
 
+// med returns the effective value of the multi exit discriminator.
+func (a *Attributes) med() uint32 {
+	if a.HasMED {
+		return a.MED
+	}
+	return 0
+}
+
 // sortAttributes sorts a slice of attributes by their local preference
 // (highest value first). If the local preference between two paths is equal,
 // the one with the shorter AS path sorts first.
@@ -231,7 +249,13 @@ func sortAttributes(as []unique.Handle[Attributes]) {
 		if ilp, jlp := ai.localPref(), aj.localPref(); ilp != jlp {
 			return ilp > jlp
 		}
-		return ai.PathLen() < aj.PathLen()
+		if ipl, jpl := ai.PathLen(), aj.PathLen(); ipl != jpl {
+			return ipl < jpl
+		}
+		if (ai.HasMED || aj.HasMED) && (ai.First() == aj.First()) {
+			return ai.med() < aj.med()
+		}
+		return false
 	})
 }
 
