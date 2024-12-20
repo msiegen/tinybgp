@@ -19,6 +19,7 @@ import (
 	"net"
 	"net/netip"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
@@ -82,6 +83,9 @@ type Peer struct {
 
 	// ExportFilter decides whether to export a route to the peer and optionally
 	// modifies it. If not provided, the DefaultExportFilter method is used.
+	//
+	// Filter decisions are cached. To force a reevaluation, call ResetExportCache
+	// after any filter policy changes.
 	ExportFilter Filter
 
 	// Timers holds optional parameters to control the hold time and keepalive of
@@ -100,8 +104,9 @@ type Peer struct {
 	// sure that the IP address matches the one in Addr.
 	ConfigureListener func(l net.Listener) error
 
-	fsm     *fsm
-	dynamic bool
+	fsm                 *fsm
+	dynamic             bool
+	exportFilterVersion atomic.Int64
 }
 
 func (p *Peer) localAddr() net.Addr {
@@ -205,4 +210,11 @@ func (p *Peer) exportFilter(nlri netip.Prefix, attrs *Attributes) error {
 		return p.ExportFilter(nlri, attrs)
 	}
 	return p.DefaultExportFilter(nlri, attrs)
+}
+
+// ResetExportCache clears any cached decisions made by the export filter.
+// This may be called to reevaluate previously announced (or suppressed) routes
+// if the filter policy has changed.
+func (p *Peer) ResetExportCache() {
+	p.exportFilterVersion.Add(1)
 }
