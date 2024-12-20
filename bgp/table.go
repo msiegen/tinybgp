@@ -79,6 +79,23 @@ func (t *Table) hasNetwork(nlri netip.Prefix) bool {
 	return n.hasPath()
 }
 
+// Routes returns an iterator that yields all the routes for one network.
+func (t *Table) Routes(nlri netip.Prefix) iter.Seq[Attributes] {
+	return func(yield func(Attributes) bool) {
+		t.mu.Lock()
+		n, ok := t.networks[nlri]
+		t.mu.Unlock()
+		if !ok {
+			return
+		}
+		for _, attrs := range n.allPaths() {
+			if !yield(attrs.Value()) {
+				return
+			}
+		}
+	}
+}
+
 // AllRoutes returns an iterator that yields all the routes for every network.
 func (t *Table) AllRoutes() iter.Seq2[netip.Prefix, Attributes] {
 	return func(yield func(netip.Prefix, Attributes) bool) {
