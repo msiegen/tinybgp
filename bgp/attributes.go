@@ -105,6 +105,14 @@ func (a *Attributes) PathContains(asn uint32) bool {
 	return false
 }
 
+// First returns the first AS in the path (corresponding to the nexthop).
+func (a *Attributes) First() uint32 {
+	if len(a.path) == 0 {
+		return 0
+	}
+	return deserializePath(a.path[:4])[0]
+}
+
 // Origin returns the ASN originating the route.
 func (a *Attributes) Origin() uint32 {
 	if len(a.path) == 0 {
