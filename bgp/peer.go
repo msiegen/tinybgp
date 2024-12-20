@@ -184,15 +184,19 @@ func (p *Peer) importFilter(nlri netip.Prefix, attrs *Attributes) error {
 }
 
 // DefaultExportFilter is the default filter when no ExportFilter is provided.
-// It prepends the local ASN to the AS path, changes the nexthop to the local
-// IP of the peering session, and discards routes bearing the "no export" well
-// known community.
+// It implements the policy:
+//   - Discard routes with the "no export" well known community
+//   - Prepend the local ASN to the AS path
+//   - Change the nexthop to the local IP of the peering session
+//   - Clear the MED (multi exit discriminator)
 func (p *Peer) DefaultExportFilter(prefix netip.Prefix, attrs *Attributes) error {
 	if attrs.Communities()[noExportCommunity] {
 		return ErrDiscard
 	}
 	attrs.Prepend(p.fsm.server.ASN)
 	attrs.Nexthop = p.fsm.session.LocalIP
+	attrs.MED = 0
+	attrs.HasMED = false
 	return nil
 }
 

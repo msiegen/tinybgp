@@ -15,10 +15,18 @@
 package bgp
 
 import (
+	"encoding/json"
 	"errors"
 	"net/netip"
 	"testing"
 )
+
+// jsonString returns a printable string. It's used to display test output for
+// types where the String method provides only a subset of the fields.
+func jsonString(v any) string {
+	b, _ := json.Marshal(v)
+	return string(b)
+}
 
 func TestDefaultImportFilter(t *testing.T) {
 	fsm := &fsm{
@@ -101,7 +109,79 @@ func TestDefaultImportFilter(t *testing.T) {
 				return
 			}
 			if got != tc.Want {
-				t.Errorf("got %v, want %v", got, tc.Want)
+				t.Errorf("\ngot:\n  %v\nwant:\n  %v", jsonString(got), jsonString(tc.Want))
+			}
+		})
+	}
+}
+
+func TestDefaultExportFilter(t *testing.T) {
+	fsm := &fsm{
+		server:  &Server{ASN: 65544},
+		session: session{LocalIP: netip.MustParseAddr("2001:db8::1")},
+	}
+	for _, tc := range []struct {
+		Name    string
+		Peer    *Peer
+		Attrs   Attributes
+		Want    Attributes
+		WantErr error
+	}{
+		{
+			Name: "discard_no_export",
+			Peer: &Peer{fsm: fsm},
+			Attrs: func() Attributes {
+				var a Attributes
+				a.SetPath([]uint32{65541, 65542, 65543})
+				a.SetCommunities(map[Community]bool{
+					Community{0xffff, 0xff01}: true, // no export
+				})
+				return a
+			}(),
+			WantErr: ErrDiscard,
+		},
+		{
+			Name: "prepend_own_asn_and_set_nexthop",
+			Peer: &Peer{fsm: fsm},
+			Attrs: func() Attributes {
+				var a Attributes
+				a.SetPath([]uint32{65541, 65542, 65543})
+				return a
+			}(),
+			Want: func() Attributes {
+				var a Attributes
+				a.SetPath([]uint32{65544, 65541, 65542, 65543})
+				a.Nexthop = netip.MustParseAddr("2001:db8::1")
+				return a
+			}(),
+		},
+		{
+			Name: "clear_med",
+			Peer: &Peer{fsm: fsm},
+			Attrs: Attributes{
+				MED:    42,
+				HasMED: true,
+			},
+			Want: func() Attributes {
+				var a Attributes
+				a.SetPath([]uint32{65544})
+				a.Nexthop = netip.MustParseAddr("2001:db8::1")
+				return a
+			}(),
+		},
+	} {
+		t.Run(tc.Name, func(t *testing.T) {
+			nlri := netip.MustParsePrefix("2001:db8::/48")
+			got := tc.Attrs
+			err := tc.Peer.DefaultExportFilter(nlri, &got)
+			if !errors.Is(err, tc.WantErr) {
+				t.Fatalf("got error %v, want error %v", err, tc.WantErr)
+			}
+			if err != nil {
+				return
+			}
+			if got != tc.Want {
+				t.Errorf("\ngot:\n  %v\nwant:\n  %v", jsonString(got), jsonString(tc.Want))
 			}
 		})
 	}

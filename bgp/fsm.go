@@ -452,6 +452,9 @@ func (f *fsm) sendUpdate(c net.Conn, network netip.Prefix, attrs Attributes) err
 		bgp.NewPathAttributeOrigin(bgp.BGP_ORIGIN_ATTR_TYPE_INCOMPLETE),
 		bgp.NewPathAttributeAsPath([]bgp.AsPathParamInterface{asp}),
 	)
+	if attrs.HasMED {
+		a = append(a, bgp.NewPathAttributeMultiExitDisc(attrs.MED))
+	}
 	cm := attrs.Communities()
 	if len(cm) != 0 {
 		cs := make([]uint32, 0, len(cm))
@@ -585,6 +588,8 @@ func (f *fsm) processUpdate(peerAddr netip.Addr, importFilter Filter, m *bgp.BGP
 		afi       uint16
 		safi      uint8
 		nexthop   netip.Addr
+		med       uint32
+		hasMED    bool
 		updated   []netip.Prefix
 		withdrawn []netip.Prefix
 		asPath    []uint32
@@ -636,6 +641,9 @@ func (f *fsm) processUpdate(peerAddr netip.Addr, importFilter Filter, m *bgp.BGP
 			for _, ases := range a.Value {
 				asPath = append(asPath, ases.GetAS()...)
 			}
+		case *bgp.PathAttributeMultiExitDisc:
+			med = a.Value
+			hasMED = true
 		case *bgp.PathAttributeCommunities:
 			for _, v := range a.Value {
 				communities[NewCommunity(v)] = true
@@ -671,6 +679,8 @@ func (f *fsm) processUpdate(peerAddr netip.Addr, importFilter Filter, m *bgp.BGP
 		attrs := Attributes{
 			Peer:    peerAddr,
 			Nexthop: nexthop,
+			MED:     med,
+			HasMED:  hasMED,
 		}
 		attrs.SetPath(asPath)
 		attrs.SetCommunities(communities)
