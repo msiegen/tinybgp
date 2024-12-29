@@ -287,6 +287,6 @@ func sortAttributes(as []unique.Handle[Attributes], cmp func(a, b *Attributes) i
 	slices.SortStableFunc(as, func(a, b unique.Handle[Attributes]) int {
 		av := a.Value()
 		bv := b.Value()
-		return Compare(&av, &bv)
+		return cmp(&av, &bv)
 	})
 }
