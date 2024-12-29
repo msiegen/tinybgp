@@ -25,6 +25,10 @@ import (
 
 // A Table is a set of networks that each have a distinct NLRI.
 type Table struct {
+	// Compare decides which attributes represent the better route.
+	// If nil, the package level Compare function is used.
+	Compare func(a, b *Attributes) int
+
 	version  atomic.Int64
 	mu       sync.Mutex
 	networks map[netip.Prefix]*Network
@@ -88,7 +92,7 @@ func (t *Table) Routes(nlri netip.Prefix) iter.Seq[Attributes] {
 		if !ok {
 			return
 		}
-		for _, attrs := range n.allPaths() {
+		for _, attrs := range n.allPaths(t) {
 			if !yield(attrs.Value()) {
 				return
 			}
@@ -102,7 +106,7 @@ func (t *Table) AllRoutes() iter.Seq2[netip.Prefix, Attributes] {
 		t.mu.Lock()
 		for p, n := range t.networks {
 			t.mu.Unlock()
-			for _, attrs := range n.allPaths() {
+			for _, attrs := range n.allPaths(t) {
 				if !yield(p, attrs.Value()) {
 					return
 				}
@@ -119,7 +123,7 @@ func (t *Table) bestRoutes() iter.Seq2[netip.Prefix, unique.Handle[Attributes]] 
 		t.mu.Lock()
 		for p, n := range t.networks {
 			t.mu.Unlock()
-			if attrs, ok := n.bestPath(); ok {
+			if attrs, ok := n.bestPath(t); ok {
 				if !yield(p, attrs) {
 					return
 				}

@@ -68,14 +68,14 @@ func (n *Network) RemovePath(peer netip.Addr) {
 }
 
 // allPaths returns a copy of all paths to the network.
-func (n *Network) allPaths() []unique.Handle[Attributes] {
+func (n *Network) allPaths(t *Table) []unique.Handle[Attributes] {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if len(n.paths) == 0 {
 		return nil
 	}
 	if !n.sorted {
-		sortAttributes(n.paths)
+		sortAttributes(n.paths, t.Compare)
 		n.sorted = true
 	}
 	return slices.Clone(n.paths)
@@ -86,14 +86,14 @@ var (
 )
 
 // bestPath returns the best path to the network, or false if no path exists.
-func (n *Network) bestPath() (unique.Handle[Attributes], bool) {
+func (n *Network) bestPath(t *Table) (unique.Handle[Attributes], bool) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if len(n.paths) == 0 {
 		return zeroAttributes, false
 	}
 	if !n.sorted {
-		sortAttributes(n.paths)
+		sortAttributes(n.paths, t.Compare)
 		n.sorted = true
 	}
 	return n.paths[0], true

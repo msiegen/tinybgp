@@ -38,32 +38,32 @@ func TestNetworkPaths(t *testing.T) {
 	if n.hasPath() {
 		t.Errorf("hasPath returned %v, want %v", true, false)
 	}
-	if _, ok := n.bestPath(); ok {
+	if _, ok := n.bestPath(&Table{}); ok {
 		t.Errorf("bestPath returned ok %v, want %v", true, false)
 	}
 	n.AddPath(a2)
 	if !n.hasPath() {
 		t.Errorf("hasPath returned %v, want %v", false, true)
 	}
-	if best, ok := n.bestPath(); !ok {
+	if best, ok := n.bestPath(&Table{}); !ok {
 		t.Errorf("bestPath returned ok %v, want %v", false, true)
 	} else if best.Value() != a2 {
 		t.Errorf("bestPath returned %v, want %v", best.Value(), a2)
 	}
 	n.AddPath(a1)
-	if best, ok := n.bestPath(); !ok {
+	if best, ok := n.bestPath(&Table{}); !ok {
 		t.Errorf("bestPath returned ok %v, want %v", false, true)
 	} else if best.Value() != a1 {
 		t.Errorf("bestPath returned %v, want %v", best.Value(), a1)
 	}
 	n.RemovePath(p1)
-	if best, ok := n.bestPath(); !ok {
+	if best, ok := n.bestPath(&Table{}); !ok {
 		t.Errorf("bestPath returned ok %v, want %v", false, true)
 	} else if best.Value() != a2 {
 		t.Errorf("bestPath returned %v, want %v", best.Value(), a2)
 	}
 	n.RemovePath(p2)
-	if _, ok := n.bestPath(); ok {
+	if _, ok := n.bestPath(&Table{}); ok {
 		t.Errorf("bestPath returned ok %v, want %v", true, false)
 	}
 	if n.hasPath() {
