@@ -18,6 +18,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net/netip"
+	"slices"
 	"sort"
 	"strings"
 	"unique"
@@ -239,26 +240,6 @@ func (a *Attributes) med() uint32 {
 	return 0
 }
 
-// sortAttributes sorts a slice of attributes by their local preference
-// (highest value first). If the local preference between two paths is equal,
-// the one with the shorter AS path sorts first.
-func sortAttributes(as []unique.Handle[Attributes]) {
-	sort.SliceStable(as, func(i, j int) bool {
-		ai := as[i].Value()
-		aj := as[j].Value()
-		if ilp, jlp := ai.localPref(), aj.localPref(); ilp != jlp {
-			return ilp > jlp
-		}
-		if ipl, jpl := ai.PathLen(), aj.PathLen(); ipl != jpl {
-			return ipl < jpl
-		}
-		if (ai.HasMED || aj.HasMED) && (ai.First() == aj.First()) {
-			return ai.med() < aj.med()
-		}
-		return false
-	})
-}
-
 // String returns a human readable representation of a few key attributes.
 func (a Attributes) String() string {
 	var parts []string
@@ -269,4 +250,43 @@ func (a Attributes) String() string {
 		parts = append(parts, fmt.Sprintf("path=%v", a.Path()))
 	}
 	return "{" + strings.Join(parts, " ") + "}"
+}
+
+// Compare decides which attributes represent the better route. It returns a
+// negative number if a is better than b, a positive number if b is better than
+// a, and zero if a and b are equally good. Better routes are identified by:
+//   - Local preference (higher values first)
+//   - AS path length (shorter paths first)
+//   - MED (lower values first)
+func Compare(a, b *Attributes) int {
+	if alp, blp := a.localPref(), b.localPref(); alp > blp {
+		return -1
+	} else if alp < blp {
+		return 1
+	}
+	if apl, bpl := a.PathLen(), b.PathLen(); apl < bpl {
+		return -1
+	} else if apl > bpl {
+		return 1
+	}
+	if (a.HasMED || b.HasMED) && (a.First() == b.First()) {
+		if am, bm := a.med(), b.med(); am < bm {
+			return -1
+		} else if am > bm {
+			return 1
+		}
+	}
+	return 0
+}
+
+// sortAttributes sorts a slice of attributes to place the best routes first.
+func sortAttributes(as []unique.Handle[Attributes], cmp func(a, b *Attributes) int) {
+	if cmp == nil {
+		cmp = Compare
+	}
+	slices.SortStableFunc(as, func(a, b unique.Handle[Attributes]) int {
+		av := a.Value()
+		bv := b.Value()
+		return Compare(&av, &bv)
+	})
 }
