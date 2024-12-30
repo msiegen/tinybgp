@@ -190,7 +190,7 @@ func TestSortAttributes(t *testing.T) {
 			for _, a := range tc {
 				as = append(as, unique.Make(a))
 			}
-			sortAttributes(as, nil)
+			sortAttributes(as, Compare)
 			var got []Attributes
 			for _, a := range as {
 				got = append(got, a.Value())

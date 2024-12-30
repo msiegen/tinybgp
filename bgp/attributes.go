@@ -281,9 +281,6 @@ func Compare(a, b *Attributes) int {
 
 // sortAttributes sorts a slice of attributes to place the best routes first.
 func sortAttributes(as []unique.Handle[Attributes], cmp func(a, b *Attributes) int) {
-	if cmp == nil {
-		cmp = Compare
-	}
 	slices.SortStableFunc(as, func(a, b unique.Handle[Attributes]) int {
 		av := a.Value()
 		bv := b.Value()
