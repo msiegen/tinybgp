@@ -209,3 +209,43 @@ func WatchBest(t ...*Table) iter.Seq2[netip.Prefix, Attributes] {
 		}
 	}
 }
+
+// WatchBestMultiPath returns an infinite iterator that yields the best
+// multipath routes for each network in each table. A multipath route is
+// comprised of a set of routes on which the Compare function returns zero.
+// The disappearance of a route is signaled with an empty slice of Attributes.
+func WatchBestMultiPath(t ...*Table) iter.Seq2[netip.Prefix, []Attributes] {
+	if len(t) == 0 {
+		return nil
+	}
+	versions := make([]map[netip.Prefix]int64, len(t))
+	for i := 0; i < len(t); i++ {
+		versions[i] = map[netip.Prefix]int64{}
+	}
+	return func(yield func(netip.Prefix, []Attributes) bool) {
+		for {
+			for i, t := range t {
+				t.mu.Lock()
+				for nlri, n := range t.networks {
+					t.mu.Unlock()
+					if ahs, version, ok := n.bestMultiPath(t, versions[i][nlri]); ok {
+						versions[i][nlri] = version
+						var attrss []Attributes
+						if len(ahs) != 0 {
+							attrss = make([]Attributes, len(ahs))
+							for i, ah := range ahs {
+								attrss[i] = ah.Value()
+							}
+						}
+						if !yield(nlri, attrss) {
+							return
+						}
+					}
+					t.mu.Lock()
+				}
+				t.mu.Unlock()
+			}
+			time.Sleep(1 * time.Second)
+		}
+	}
+}
