@@ -679,6 +679,9 @@ func (f *fsm) processUpdate(peerAddr netip.Addr, importFilter Filter, m *bgp.BGP
 			table.Network(nlri).RemovePath(peerAddr)
 		}
 	}
+	if nexthop.IsLinkLocalUnicast() {
+		nexthop = nexthop.WithZone(peerAddr.Zone())
+	}
 	for _, nlri := range updated {
 		attrs := Attributes{
 			Peer:    peerAddr,

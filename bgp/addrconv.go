@@ -24,7 +24,7 @@ func addrFromNetAddr(addr net.Addr) (netip.Addr, int) {
 	switch a := addr.(type) {
 	case *net.TCPAddr:
 		aa, _ := netip.AddrFromSlice(a.IP)
-		return aa, a.Port
+		return aa.WithZone(a.Zone), a.Port
 	default:
 		return netip.Addr{}, 0
 	}
