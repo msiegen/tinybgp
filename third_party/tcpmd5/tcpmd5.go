@@ -66,6 +66,10 @@ func DialerControl(password string) func(_, _ string, _ syscall.RawConn) error {
 
 // ConfigureListener returns a function that enables TCP MD5 signatures for
 // connections accepted from the specified address.
+//
+// TCP MD5 signatures are incompatible with multipath TCP, which is enabled by
+// default in Go 1.24. To disable TCP multipath, see
+// https://pkg.go.dev/net#ListenConfig.SetMultipathTCP.
 func ConfigureListener(address, password string) func(_ net.Listener) error {
 	t := tcpMD5Sig(address, password)
 	return func(lis net.Listener) error {

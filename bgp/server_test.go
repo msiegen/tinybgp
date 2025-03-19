@@ -15,6 +15,7 @@
 package bgp
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/netip"
@@ -241,6 +242,7 @@ func TestServer(t *testing.T) {
 		t.Run(tc.Name, func(t *testing.T) {
 			tc := tc
 			t.Parallel()
+			ctx := context.Background()
 
 			loopback := netip.MustParseAddr(tc.Loopback)
 
@@ -254,12 +256,14 @@ func TestServer(t *testing.T) {
 			tc.RightServer.Logger = rightLogger
 
 			// Start two listeners on any available ports.
+			cfg := &net.ListenConfig{}
+			cfg.SetMultipathTCP(false)
 			lisAddr := netip.AddrPortFrom(loopback, 0).String()
-			leftListener, err := net.Listen("tcp", lisAddr)
+			leftListener, err := cfg.Listen(ctx, "tcp", lisAddr)
 			if err != nil {
 				t.Fatalf("L: failed to listen: %v", err)
 			}
-			rightListener, err := net.Listen("tcp", lisAddr)
+			rightListener, err := cfg.Listen(ctx, "tcp", lisAddr)
 			if err != nil {
 				t.Fatalf("R: failed to listen: %v", err)
 			}
