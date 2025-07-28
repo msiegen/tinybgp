@@ -16,7 +16,7 @@ package bgp
 
 import (
 	"context"
-	"fmt"
+	"log/slog"
 	"net"
 	"net/netip"
 	"sync"
@@ -26,37 +26,42 @@ import (
 	"github.com/msiegen/tinybgp/third_party/tcpmd5"
 )
 
-// logger implements the Logger interface for use in testing.
-type logger struct {
-	t       *testing.T
-	started time.Time
-	prefix  string
-
-	mu   sync.Mutex
-	done bool
+// logWriter implements the io.Writer interface for writing test logs.
+type logWriter struct {
+	t      *testing.T
+	prefix string
+	mu     sync.Mutex
+	done   bool
 }
 
-func (l *logger) Printf(format string, args ...any) {
+func (l *logWriter) Write(b []byte) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if !l.done {
-		ts := fmt.Sprintf("%03.6f", float64(time.Since(l.started).Nanoseconds())/1e9)
-		l.t.Logf(ts+" "+l.prefix+format, args...)
+		l.t.Logf("%v%s", l.prefix, b)
 	}
+	return len(b), nil
 }
 
-func (l *logger) Stop() {
+func (l *logWriter) Stop() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.done = true
 }
 
-func newLogger(t *testing.T, started time.Time, prefix string) *logger {
-	return &logger{
-		t:       t,
-		started: started,
-		prefix:  prefix,
+func newLogger(t *testing.T, started time.Time, prefix string) (*slog.Logger, func()) {
+	w := &logWriter{
+		t:      t,
+		prefix: prefix,
 	}
+	return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			if a.Key == "time" {
+				return slog.Duration(a.Key, time.Since(started))
+			}
+			return a
+		},
+	})), w.Stop
 }
 
 // TestServer may exercise varied code paths depending on timing. To run a
@@ -248,11 +253,11 @@ func TestServer(t *testing.T) {
 
 			// Enable debug logging.
 			testStarted := time.Now()
-			leftLogger := newLogger(t, testStarted, "L: ")
-			defer leftLogger.Stop()
+			leftLogger, stopLeftLogger := newLogger(t, testStarted, "L: ")
+			defer stopLeftLogger()
 			tc.LeftServer.Logger = leftLogger
-			rightLogger := newLogger(t, testStarted, "R: ")
-			defer rightLogger.Stop()
+			rightLogger, stopRightLogger := newLogger(t, testStarted, "R: ")
+			defer stopRightLogger()
 			tc.RightServer.Logger = rightLogger
 
 			// Start two listeners on any available ports.
@@ -285,13 +290,13 @@ func TestServer(t *testing.T) {
 			// Start the servers.
 			go func() {
 				if err := tc.LeftServer.Serve(leftListener); err != nil {
-					leftLogger.Printf("server failed: %v", err)
+					leftLogger.Error("server failed", "details", err)
 				}
 			}()
 			defer tc.LeftServer.Close()
 			go func() {
 				if err := tc.RightServer.Serve(rightListener); err != nil {
-					rightLogger.Printf("server failed: %v", err)
+					rightLogger.Error("server failed", "details", err)
 				}
 			}()
 			defer tc.RightServer.Close()

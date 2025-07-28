@@ -15,6 +15,7 @@
 package bgp
 
 import (
+	"context"
 	"errors"
 	"net"
 	"net/netip"
@@ -159,7 +160,7 @@ func (p *Peer) start(s *Server) error {
 		stopC:        make(chan struct{}),
 		doneC:        make(chan struct{}),
 	}
-	go p.fsm.run(p)
+	go p.fsm.run(context.Background(), p)
 	return nil
 }
 
