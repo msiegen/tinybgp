@@ -16,6 +16,7 @@ package bgp
 
 import (
 	"encoding/binary"
+	"log/slog"
 	"net"
 	"time"
 
@@ -43,7 +44,7 @@ type collisionDetector struct {
 	session session
 }
 
-func newCollisionDetector(connecting bool, f *fsm, peer *Peer, transportAFI uint16) *collisionDetector {
+func newCollisionDetector(connecting bool, f *fsm, peer *Peer, transportAFI uint16, earlyLogger *slog.Logger) *collisionDetector {
 	if !connecting {
 		// If we haven't tried to initiate a connection ourselves, then no
 		// possibility of a collision exists.
@@ -53,7 +54,7 @@ func newCollisionDetector(connecting bool, f *fsm, peer *Peer, transportAFI uint
 		connC: make(chan net.Conn),
 		doneC: make(chan bool),
 	}
-	go d.run(f, peer, transportAFI)
+	go d.run(f, peer, transportAFI, earlyLogger)
 	return d
 }
 
@@ -69,13 +70,17 @@ func stringToRouterID(s string) uint32 {
 	return ipToRouterID(net.ParseIP(s))
 }
 
-func (d *collisionDetector) run(f *fsm, peer *Peer, transportAFI uint16) {
+func (d *collisionDetector) run(f *fsm, peer *Peer, transportAFI uint16, earlyLogger *slog.Logger) {
+	// Until we receive an OPEN message from the peer, not all fields for the
+	// structured logger are available. Use a logger with fewer fields.
+	l := earlyLogger
+
 	select {
 	case c := <-f.acceptC:
 		// Send OPEN message.
 		if err := f.sendOpen(c, transportAFI); err != nil {
 			c.Close() // ignore errors
-			f.server.logf("Failed to send BGP OPEN to peer %v for collision detection: %v", peer.addr(), err)
+			l.Error("collision detector failed to send open", "details", err)
 			return
 		}
 
@@ -84,32 +89,38 @@ func (d *collisionDetector) run(f *fsm, peer *Peer, transportAFI uint16) {
 		if err != nil {
 			maybeSendNotification(c, err) // ignore errors
 			c.Close()                     // ignore errors
-			f.server.logf("Failed to receive BGP OPEN from peer %v for collision detection: %v", peer.addr(), err)
+			l.Error("collision detector failed to receive open", "details", err)
 			return
 		}
 
 		// Validate the OPEN message from the peer.
 		o, ok := m.Body.(*bgp.BGPOpen)
 		if !ok {
-			fsmSendNotification(c, bgp.BGP_ERROR_FSM_ERROR, bgp.BGP_ERROR_SUB_RECEIVE_UNEXPECTED_MESSAGE_IN_OPENSENT_STATE, nil) // ignore errors
-			c.Close()                                                                                                            // ignore errors
-			f.server.logf("Received unexpected message in state OPEN from BGP peer %v during collision detection: %v", peer.addr(), err)
+			code := uint8(bgp.BGP_ERROR_FSM_ERROR)
+			subcode := uint8(bgp.BGP_ERROR_SUB_RECEIVE_UNEXPECTED_MESSAGE_IN_OPENSENT_STATE)
+			fsmSendNotification(c, code, subcode, nil) // ignore errors
+			c.Close()                                  // ignore errors
+			l.Error("collision detector received unexpected message type while waiting for open")
 			return
 		}
-		sess, code, err := validateOpen(o, transportAFI, peer)
+		sess, code, err := validateOpen(o, transportAFI, peer, f.server.logger())
 		if err != nil {
 			if code != 0 {
 				fsmSendNotification(c, bgp.BGP_ERROR_OPEN_MESSAGE_ERROR, code, nil) // ignore errors
 			}
 			c.Close() // ignore errors
-			f.server.logf("Failed to validate BGP OPEN from peer %v for collision detection: %v", peer.addr(), err)
+			l.Error("collision detector received invalid open", "details", err)
 			return
 		}
+
+		// We should now have a full logger that populates additional attributes
+		// parsed out of the peer's OPEN message. Use it instead of earlyLogger.
+		l = sess.Logger
 
 		// Send KEEPALIVE message.
 		if err := fsmSendKeepAlive(c, f.timers.HoldTime); err != nil {
 			c.Close() // ignore errors
-			f.server.logf("Failed to send BGP KEEPALIVE to peer %v for collision detection: %v", sess.PeerName, err)
+			l.Error("collision detector failed to send keepalive", "details", err)
 			return
 		}
 
@@ -118,15 +129,18 @@ func (d *collisionDetector) run(f *fsm, peer *Peer, transportAFI uint16) {
 		if err != nil {
 			maybeSendNotification(c, err) // ignore errors
 			c.Close()                     // ignore errors
-			f.server.logf("Failed to receive BGP KEEPALIVE from peer %v for collision detection: %v", sess.PeerName, err)
+			l.Error("collision detector failed to receive keepalive", "details", err)
 			return
 		}
 
+		// Validate the KEEPALIVE from the peer.
 		_, ok = m.Body.(*bgp.BGPKeepAlive)
 		if !ok {
-			fsmSendNotification(c, bgp.BGP_ERROR_FSM_ERROR, bgp.BGP_ERROR_SUB_RECEIVE_UNEXPECTED_MESSAGE_IN_OPENCONFIRM_STATE, nil) // ignore errors
-			c.Close()                                                                                                               // ignore errors
-			f.server.logf("Received unexpected message in state OPENCONFIRM from BGP peer %v during collision detection: %v", sess.PeerName, err)
+			code := uint8(bgp.BGP_ERROR_FSM_ERROR)
+			subcode := uint8(bgp.BGP_ERROR_SUB_RECEIVE_UNEXPECTED_MESSAGE_IN_OPENCONFIRM_STATE)
+			fsmSendNotification(c, code, subcode, nil) // ignore errors
+			c.Close()                                  // ignore errors
+			l.Error("collision detector received unexpected message type while waiting for keepalive")
 			return
 		}
 
@@ -138,9 +152,11 @@ func (d *collisionDetector) run(f *fsm, peer *Peer, transportAFI uint16) {
 		if peerID < localID || (peerID == localID && peerASN < localASN) {
 			// Prefer the locally initiated connection that is being handled in the
 			// main FSM, not the peer connection here in the collision detector.
-			fsmSendNotification(c, bgp.BGP_ERROR_CEASE, bgp.BGP_ERROR_SUB_CONNECTION_COLLISION_RESOLUTION, nil) // ignore errors
-			c.Close()                                                                                           // ignore errors
-			f.server.logf("Closed colliding connection from BGP peer %v", sess.PeerName)
+			code := uint8(bgp.BGP_ERROR_CEASE)
+			subcode := uint8(bgp.BGP_ERROR_SUB_CONNECTION_COLLISION_RESOLUTION)
+			fsmSendNotification(c, code, subcode, nil) // ignore errors
+			c.Close()                                  // ignore errors
+			l.Info("closed colliding connection")
 			return
 		}
 

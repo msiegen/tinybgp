@@ -18,15 +18,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/netip"
 	"sync"
 )
 
-// A Logger writes lines of output for debug purposes.
-type Logger interface {
-	Printf(string, ...any)
-}
+var discardLogger = slog.New(slog.DiscardHandler)
 
 // Server is a BGP server.
 type Server struct {
@@ -46,9 +44,9 @@ type Server struct {
 	// connection will be accepted using the dynamically created peer. Dynamic
 	// peers are destroyed when their TCP connection is closed.
 	CreatePeer func(localAddr, remoteAddr netip.Addr, conn net.Conn) (*Peer, error)
-	// Logger is the destination for human readable debug logs. If you want logs,
-	// you need to set this. To use standard Go logging set it to log.Default().
-	Logger Logger
+	// Logger is an optional structured logger.
+	// For simple use-cases, set it to slog.Default().
+	Logger *slog.Logger
 
 	mu           sync.Mutex
 	listeners    []net.Listener
@@ -60,18 +58,12 @@ type Server struct {
 	peersStopped chan struct{}
 }
 
-func (s *Server) logf(format string, v ...any) {
-	if s.Logger != nil {
-		s.Logger.Printf(format, v...)
+// logger always returns a non-nil logger.
+func (s *Server) logger() *slog.Logger {
+	if s.Logger == nil {
+		return discardLogger
 	}
-}
-
-func (s *Server) fatalf(format string, v ...any) {
-	if logger, ok := s.Logger.(interface{ Fatalf(string, ...any) }); ok {
-		logger.Fatalf(format, v...)
-	}
-	s.logf(format, v...)
-	panic(fmt.Sprintf(format, v...))
+	return s.Logger
 }
 
 func (s *Server) startPeer(p *Peer) error {
@@ -194,7 +186,7 @@ func (s *Server) acceptLoop(l net.Listener) error {
 		}
 		p, err := s.matchPeer(conn)
 		if err != nil {
-			s.logf("Rejecting connection from %v: %v", conn.RemoteAddr(), err)
+			s.logger().Error("rejecting connection from unmatched peer", "remote_addr", conn.RemoteAddr(), "details", err)
 			conn.Close() // ignore errors
 			continue
 		}
@@ -206,7 +198,7 @@ func (s *Server) acceptLoop(l net.Listener) error {
 			// we don't block the accept loop. This can happen if the peer tries to
 			// open two connections. It will never happen for dynamic peers because
 			// those are created per-connection with an acceptC buffer size of 1.
-			s.logf("Rejecting connection from %v: peer queue is full", conn.RemoteAddr(), err)
+			s.logger().Error("rejecting connection because peer queue is full", "remote_addr", conn.RemoteAddr())
 			conn.Close() // ignore errors
 		}
 	}

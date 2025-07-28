@@ -19,9 +19,11 @@ package bgp
 // https://networklessons.com/bgp/bgp-neighbor-adjacency-states
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/netip"
 	"time"
@@ -38,6 +40,9 @@ const (
 	// state_BGP_FSM_TERMINATE is an additional state in the FSM that is used as a
 	// signal to terminate the run loop.
 	state_BGP_FSM_TERMINATE = bgp.FSMState(99)
+	// LevelUpdates is a log level between INFO and DEBUG, used for high volume
+	// events associated with BGP UPDATE messages (announcements and withdrawals).
+	LevelUpdates slog.Level = -2
 )
 
 // formatState prints the name of a state for use in log messages. The strings
@@ -67,15 +72,9 @@ func formatState(s bgp.FSMState) string {
 
 // session holds data with a lifetime matching a BGP session TCP connection.
 type session struct {
-	// PeerName is a human readable peer name, used for logging. It is typically
-	// initialized to be the peer's IP address, and subsequently augmented if the
-	// peer supplies a hostname in its OPEN message.
-	PeerName string
 	// RouteFamilies is the intersection of AFI/SAFI tuples that are supported by
 	// both the local server and the peer.
 	RouteFamilies map[RouteFamily]bool
-	// PeerHost and PeerDomain are populated if supplied by the peer.
-	PeerHost, PeerDomain string
 	// PeerASN is the peer's AS number.
 	PeerASN uint32
 	// LocalIP holds a copy of the local IP address, used to populate the
@@ -95,6 +94,37 @@ type session struct {
 	// Cleared is true after any received routes have been cleared out of the
 	// local table.
 	Cleared bool
+	// Logger is a structured logger. Must not be nil.
+	Logger *slog.Logger
+}
+
+// newSession creates a new session with a non-nil logger.
+func newSession(logger *slog.Logger, peerAddr netip.Addr) session {
+	if logger == nil {
+		logger = discardLogger
+	} else {
+		logger = logger.With("peer", peerAddr)
+	}
+	return session{
+		Logger: logger,
+	}
+}
+
+// setPeerHostDomain updates the session's logger to attach the peer's host and
+// domain name. It should be called once upon receiving that information from
+// the peer's OPEN message.
+func (s *session) setPeerHostDomain(host, domain string) {
+	if s.Logger == discardLogger {
+		return
+	}
+	switch {
+	case host != "" && domain != "":
+		s.Logger = s.Logger.With("peer_host", host, "peer_domain", domain)
+	case host != "":
+		s.Logger = s.Logger.With("peer_host", host)
+	case domain != "":
+		s.Logger = s.Logger.With("peer_domain", domain)
+	}
 }
 
 // initCache initializes the cache of which paths have been sent to the peer.
@@ -139,14 +169,20 @@ func (f *fsm) setStateWithoutLog(s bgp.FSMState) {
 	f.state = s
 }
 
-func (f *fsm) setState(s bgp.FSMState) {
-	f.server.logf("BGP peer %v %v->%v", f.session.PeerName, formatState(f.state), formatState(s))
+func (f *fsm) setState(ctx context.Context, s bgp.FSMState) {
+	if l := f.session.Logger; l.Enabled(ctx, slog.LevelInfo) {
+		l.Info("session changed state", "state", formatState(s), "prev_state", formatState(f.state))
+	}
 	f.setStateWithoutLog(s)
 }
 
-func (f *fsm) setStateError(peer *Peer, e error) {
+func (f *fsm) setStateError(ctx context.Context, peer *Peer, e error) {
 	nextState := state_BGP_FSM_ERROR
-	f.server.logf("BGP peer %v %v->%v: %v", f.session.PeerName, formatState(f.state), formatState(nextState), e)
+	if l := f.session.Logger; l.Enabled(ctx, slog.LevelError) {
+		// TODO: If the error is due to the receipt of a NOTIFICATION, extract
+		// the code, subcode, and data and log them as attributes.
+		l.Error("session changed state", "state", formatState(nextState), "prev_state", formatState(f.state), "details", e)
+	}
 	f.setStateWithoutLog(nextState)
 }
 
@@ -310,7 +346,7 @@ func openCapabilities(o *bgp.BGPOpen) ([]bgp.ParameterCapabilityInterface, error
 // validateOpen checks the OPEN message received from the peer. It returns an
 // error subcode that may be combined with code bgp.BGP_ERROR_OPEN_MESSAGE_ERROR
 // into a NOTIFICATION message back to the peer.
-func validateOpen(o *bgp.BGPOpen, transportAFI uint16, peer *Peer) (session, uint8, error) {
+func validateOpen(o *bgp.BGPOpen, transportAFI uint16, peer *Peer, serverLogger *slog.Logger) (session, uint8, error) {
 	// We only support BGP-4, https://datatracker.ietf.org/doc/html/rfc4271.
 	if o.Version != 4 {
 		return session{}, bgp.BGP_ERROR_SUB_UNSUPPORTED_VERSION_NUMBER, fmt.Errorf("unsupported BGP version: %v", o.Version)
@@ -321,7 +357,7 @@ func validateOpen(o *bgp.BGPOpen, transportAFI uint16, peer *Peer) (session, uin
 		return session{}, bgp.BGP_ERROR_SUB_UNSUPPORTED_OPTIONAL_PARAMETER, err
 	}
 	var fourByteAS uint32
-	sess := session{PeerName: peer.Addr.String()} // create new session
+	sess := newSession(serverLogger, peer.Addr) // create new session
 	sess.RouteFamilies = map[RouteFamily]bool{}
 	extendedNexthops := map[bgp.CapExtendedNexthopTuple]bool{}
 	for _, cc := range caps {
@@ -340,11 +376,11 @@ func validateOpen(o *bgp.BGPOpen, transportAFI uint16, peer *Peer) (session, uin
 				extendedNexthops[*t] = true
 			}
 		case *bgp.CapFQDN:
-			sess.PeerHost = c.HostName
-			sess.PeerDomain = c.DomainName
-			if c.HostName != "" {
-				sess.PeerName = sess.PeerHost + "/" + peer.Addr.String()
+			// Augment the session's logger with the host and domain name.
+			if c.DomainNameLen == 0 {
+				c.DomainName = "" // workaround GoBGP bug
 			}
+			sess.setPeerHostDomain(c.HostName, c.DomainName)
 		}
 	}
 	// Abort if the peer doesn't support 4-byte AS numbers. That should be rare,
@@ -488,7 +524,7 @@ func (f *fsm) sendWithdraw(c net.Conn, network netip.Prefix) error {
 
 // sendUpdates informs the peer of any paths that have changed since the last
 // call to sendUpdates.
-func (f *fsm) sendUpdates(c net.Conn, reevaluate bool) (bool, error) {
+func (f *fsm) sendUpdates(ctx context.Context, c net.Conn, reevaluate bool) (bool, error) {
 	var alive bool
 	for rf, table := range f.peer.Export {
 		if !f.session.RouteFamilies[rf] {
@@ -499,12 +535,12 @@ func (f *fsm) sendUpdates(c net.Conn, reevaluate bool) (bool, error) {
 		suppressed := f.session.Suppressed[rf]
 		for nlri, attrs := range table.updatedRoutes(f.exportFilter, tracked, suppressed, reevaluate) {
 			if attrs.Nexthop.IsValid() {
-				f.server.logf("Announcing %v to peer %v", nlri, f.session.PeerName)
+				f.session.Logger.Log(ctx, LevelUpdates, "announcing", "nlri", nlri)
 				if err := f.sendUpdate(c, nlri, attrs); err != nil {
 					return false, err
 				}
 			} else {
-				f.server.logf("Withdrawing %v from peer %v", nlri, f.session.PeerName)
+				f.session.Logger.Log(ctx, LevelUpdates, "withdrawing", "nlri", nlri)
 				if err := f.sendWithdraw(c, nlri); err != nil {
 					return false, err
 				}
@@ -537,7 +573,7 @@ func maybeSendNotification(c net.Conn, e error) error {
 }
 
 // sendLoop launches a background goroutine to handle outgoing messages.
-func (f *fsm) sendLoop(c net.Conn) (chan<- notification, <-chan error) {
+func (f *fsm) sendLoop(ctx context.Context, c net.Conn) (chan<- notification, <-chan error) {
 	// notifyC needs a buffer of 2 because either the run or recvLoop function may
 	// wish to transmit a NOTIFICATION.
 	notifyC := make(chan notification, 2)
@@ -552,7 +588,7 @@ func (f *fsm) sendLoop(c net.Conn) (chan<- notification, <-chan error) {
 				delay = 1 * time.Second
 				newVersion := f.peer.exportFilterVersion.Load()
 				reevaluate := newVersion != version
-				ok, err := f.sendUpdates(c, reevaluate)
+				ok, err := f.sendUpdates(ctx, c, reevaluate)
 				if err != nil {
 					errC <- err
 					return
@@ -587,7 +623,7 @@ func (f *fsm) sendLoop(c net.Conn) (chan<- notification, <-chan error) {
 	return notifyC, errC
 }
 
-func (f *fsm) processUpdate(peerAddr netip.Addr, importFilter Filter, m *bgp.BGPUpdate) {
+func (f *fsm) processUpdate(ctx context.Context, peerAddr netip.Addr, importFilter Filter, m *bgp.BGPUpdate) {
 	var (
 		afi       uint16
 		safi      uint8
@@ -693,8 +729,10 @@ func (f *fsm) processUpdate(peerAddr netip.Addr, importFilter Filter, m *bgp.BGP
 		attrs.SetCommunities(communities)
 		attrs.SetExtendedCommunities(extendedCommunities)
 		if err := importFilter(nlri, &attrs); err != nil {
-			if !errors.Is(err, ErrDiscard) {
-				f.server.logf("Not importing %v from peer %v due to error: %v", nlri, f.session.PeerName, err)
+			if errors.Is(err, ErrDiscard) {
+				f.session.Logger.Log(ctx, LevelUpdates, "import filter discarded", "nlri", nlri)
+			} else {
+				f.session.Logger.Error("import filter failed", "nlri", nlri, "details", err)
 			}
 			// If an NLRI was previously accepted but should now be filtered,
 			// remove it from the table.
@@ -703,13 +741,20 @@ func (f *fsm) processUpdate(peerAddr netip.Addr, importFilter Filter, m *bgp.BGP
 			}
 			continue
 		}
-		//f.server.logf("Installing %v with %v", nlri, attrs)
+		f.session.Logger.Log(ctx, LevelUpdates, "importing", "nlri", nlri)
 		table.Network(nlri).AddPath(attrs)
 	}
 }
 
+// isFramingError returns true if the connecton is unsynchronized or a message
+// header has a bad length. These cases are unrecoverable and require the
+// session to be torn down.
+func isFramingError(e *bgp.MessageError) bool {
+	return e.TypeCode == bgp.BGP_ERROR_MESSAGE_HEADER_ERROR && e.SubTypeCode != bgp.BGP_ERROR_SUB_BAD_MESSAGE_TYPE
+}
+
 // recvLoop launches a background goroutine to handle incomming messages.
-func (f *fsm) recvLoop(c net.Conn, peerAddr netip.Addr, importFilter Filter, holdTime time.Duration, notifyC chan<- notification) (<-chan error, <-chan struct{}) {
+func (f *fsm) recvLoop(ctx context.Context, c net.Conn, peerAddr netip.Addr, importFilter Filter, holdTime time.Duration, notifyC chan<- notification) (<-chan error, <-chan struct{}) {
 	errC := make(chan error, 1)
 	doneC := make(chan struct{})
 	go func(errC chan<- error, doneC chan<- struct{}) {
@@ -719,8 +764,11 @@ func (f *fsm) recvLoop(c net.Conn, peerAddr netip.Addr, importFilter Filter, hol
 			msg, err := fsmRecvMessage(c, deadline)
 			if err != nil {
 				var me *bgp.MessageError
-				if errors.As(err, &me) {
-					f.server.logf("Ignoring message from BGP peer %v: message error type=%v, subtype=%v: %v", peerAddr, me.TypeCode, me.SubTypeCode, err)
+				if errors.As(err, &me) && !isFramingError(me) {
+					// Ignore the bad message. We don't want to tear down the session just
+					// because an UPDATE, possibly from far away on the internet, contains
+					// data that GoBGP doesn't understand.
+					f.session.Logger.Warn("ignoring bad message", "code", me.TypeCode, "subcode", me.SubTypeCode, "details", err)
 					continue
 				}
 				errC <- err // Unblock recvErrC in func run before sendErrC.
@@ -735,7 +783,7 @@ func (f *fsm) recvLoop(c net.Conn, peerAddr netip.Addr, importFilter Filter, hol
 			switch m := msg.Body.(type) {
 			case *bgp.BGPUpdate:
 				deadline = time.Now().Add(holdTime)
-				f.processUpdate(peerAddr, importFilter, m)
+				f.processUpdate(ctx, peerAddr, importFilter, m)
 			case *bgp.BGPKeepAlive:
 				deadline = time.Now().Add(holdTime)
 			case *bgp.BGPNotification:
@@ -766,7 +814,7 @@ func (f *fsm) removePaths(peerAddr netip.Addr) {
 }
 
 // run executes the BGP state machine.
-func (f *fsm) run(peer *Peer) {
+func (f *fsm) run(ctx context.Context, peer *Peer) {
 	dialer := &net.Dialer{
 		Timeout:   defaultOpenTimeout,
 		LocalAddr: peer.localAddr(),
@@ -788,7 +836,11 @@ func (f *fsm) run(peer *Peer) {
 	for {
 		switch f.getState() {
 		case bgp.BGP_FSM_IDLE:
-			f.session = session{PeerName: peerAddr} // clear previous session
+			// Create a new session to clear out any leftover state from previous
+			// trips through the state machine, and to give ourselves a logger for use
+			// while attempting to connect. This session will be replaced with a more
+			// fully populated one upon receiving a valid OPEN message from the peer.
+			f.session = newSession(f.server.logger(), peer.Addr)
 			var readyToConnect <-chan time.Time
 			if !peer.Passive {
 				readyToConnect = time.After(connectBackoff.Duration())
@@ -800,19 +852,20 @@ func (f *fsm) run(peer *Peer) {
 				// outgoing dial and was selected as preferred. Grab it and jump
 				// straight to state ESTABLISHED.
 				bgpConn = c
+				// Replace the initial session with the one created by validateOpen.
 				f.session = collisionDetector.session
-				f.setState(bgp.BGP_FSM_ESTABLISHED)
+				f.setState(ctx, bgp.BGP_FSM_ESTABLISHED)
 			case c := <-f.acceptC:
 				// We have a new connection.
 				bgpConn = c
-				f.setState(bgp.BGP_FSM_ACTIVE)
+				f.setState(ctx, bgp.BGP_FSM_ACTIVE)
 				// TODO: In all later states, also watch f.acceptC and close any
 				// connections that happen to be received.
 			case <-readyToConnect:
-				f.setState(bgp.BGP_FSM_CONNECT)
+				f.setState(ctx, bgp.BGP_FSM_CONNECT)
 				connecting = true
 			case <-f.stopC:
-				f.setState(state_BGP_FSM_TERMINATE)
+				f.setState(ctx, state_BGP_FSM_TERMINATE)
 			}
 			collisionDetector.Stop()
 			collisionDetector = nil
@@ -824,11 +877,11 @@ func (f *fsm) run(peer *Peer) {
 			select {
 			case c := <-connC:
 				bgpConn = c
-				f.setState(bgp.BGP_FSM_ACTIVE)
+				f.setState(ctx, bgp.BGP_FSM_ACTIVE)
 			case err := <-errC:
-				f.setStateError(peer, err)
+				f.setStateError(ctx, peer, err)
 			case <-f.stopC:
-				f.setState(state_BGP_FSM_TERMINATE)
+				f.setState(ctx, state_BGP_FSM_TERMINATE)
 			}
 			// TODO: If we get an incomming connection, accept it and jump to state
 			// ACTIVE. Maybe this can be done by starting the colision handler earlier
@@ -837,58 +890,59 @@ func (f *fsm) run(peer *Peer) {
 		case bgp.BGP_FSM_ACTIVE:
 			if err := f.sendOpen(bgpConn, transportAFI); err != nil {
 				bgpConn.Close() // ignore errors
-				f.setStateError(peer, err)
+				f.setStateError(ctx, peer, err)
 				continue
 			}
-			f.setState(bgp.BGP_FSM_OPENSENT)
+			f.setState(ctx, bgp.BGP_FSM_OPENSENT)
 
 		case bgp.BGP_FSM_OPENSENT:
-			collisionDetector = newCollisionDetector(connecting, f, peer, transportAFI)
+			collisionDetector = newCollisionDetector(connecting, f, peer, transportAFI, f.session.Logger)
 			m, err := fsmRecvMessage(bgpConn, time.Now().Add(defaultMessageTimeout))
 			if err != nil {
-				f.setStateError(peer, err)
+				f.setStateError(ctx, peer, err)
 				maybeSendNotification(bgpConn, err) // ignore errors
 				bgpConn.Close()                     // ignore errors
 				continue
 			}
 			switch o := m.Body.(type) {
 			case *bgp.BGPOpen:
-				sess, code, err := validateOpen(o, transportAFI, peer)
+				sess, subcode, err := validateOpen(o, transportAFI, peer, f.server.logger())
 				if err != nil {
-					if code != 0 {
-						fsmSendNotification(bgpConn, bgp.BGP_ERROR_OPEN_MESSAGE_ERROR, code, nil) // ignore errors
+					if subcode != 0 {
+						fsmSendNotification(bgpConn, bgp.BGP_ERROR_OPEN_MESSAGE_ERROR, subcode, nil) // ignore errors
 					}
-					f.setStateError(peer, err)
+					f.setStateError(ctx, peer, err)
 					bgpConn.Close() // ignore errors
 					continue
 				}
+				// Replace the initial session with the one created by validateOpen.
 				f.session = sess
 				if err := fsmSendKeepAlive(bgpConn, f.timers.HoldTime); err != nil {
-					f.setStateError(peer, err)
+					f.setStateError(ctx, peer, err)
 					bgpConn.Close() // ignore errors
 					continue
 				}
 				holdTime = time.Duration(o.HoldTime) * time.Second
-				f.setState(bgp.BGP_FSM_OPENCONFIRM)
+				f.setState(ctx, bgp.BGP_FSM_OPENCONFIRM)
 			default:
 				fsmSendNotification(bgpConn, bgp.BGP_ERROR_FSM_ERROR, bgp.BGP_ERROR_SUB_RECEIVE_UNEXPECTED_MESSAGE_IN_OPENSENT_STATE, nil) // ignore errors
-				f.setStateError(peer, fmt.Errorf("received unexpected message type %v", m.Header.Type))
+				f.setStateError(ctx, peer, fmt.Errorf("received unexpected message type %v", m.Header.Type))
 				bgpConn.Close() // ignore errors
 			}
 
 		case bgp.BGP_FSM_OPENCONFIRM:
 			m, err := fsmRecvMessage(bgpConn, time.Now().Add(defaultMessageTimeout))
 			if err != nil {
-				f.setStateError(peer, err)
+				f.setStateError(ctx, peer, err)
 				maybeSendNotification(bgpConn, err) // ignore errors
 				bgpConn.Close()                     // ignore errors
 				continue
 			}
 			switch n := m.Body.(type) {
 			case *bgp.BGPKeepAlive:
-				f.setState(bgp.BGP_FSM_ESTABLISHED)
+				f.setState(ctx, bgp.BGP_FSM_ESTABLISHED)
 			case *bgp.BGPNotification:
-				f.setStateError(peer, fmt.Errorf(
+				f.setStateError(ctx, peer, fmt.Errorf(
 					"received notification code=%v subcode=%v data=%q",
 					n.ErrorCode, n.ErrorSubcode, string(n.Data),
 				))
@@ -896,7 +950,7 @@ func (f *fsm) run(peer *Peer) {
 				continue
 			default:
 				fsmSendNotification(bgpConn, bgp.BGP_ERROR_FSM_ERROR, bgp.BGP_ERROR_SUB_RECEIVE_UNEXPECTED_MESSAGE_IN_OPENCONFIRM_STATE, nil) // ignore errors
-				f.setStateError(peer, fmt.Errorf("received unexpected message type %v", m.Header.Type))
+				f.setStateError(ctx, peer, fmt.Errorf("received unexpected message type %v", m.Header.Type))
 				bgpConn.Close() // ignore errors
 			}
 
@@ -904,25 +958,25 @@ func (f *fsm) run(peer *Peer) {
 			connectBackoff.Reset()
 			f.session.initCache()
 			f.session.setLocalIP(bgpConn)
-			notifyC, sendErrC := f.sendLoop(bgpConn)
-			recvErrC, recvDoneC := f.recvLoop(bgpConn, peer.Addr, peer.importFilter, holdTime, notifyC)
+			notifyC, sendErrC := f.sendLoop(ctx, bgpConn)
+			recvErrC, recvDoneC := f.recvLoop(ctx, bgpConn, peer.Addr, peer.importFilter, holdTime, notifyC)
 			f.session.RecvDone = recvDoneC
 			select {
 			case err := <-sendErrC:
 				if err != nil {
-					f.setStateError(peer, fmt.Errorf("send: %v", err))
+					f.setStateError(ctx, peer, fmt.Errorf("send: %v", err))
 				} else {
 					// The error emitted by sendLoop should only be nil if a NOTIFICATION
 					// was successfully sent. Handle the original error from recvLoop, but
 					// don't block if there is none.
 					select {
 					case err := <-recvErrC:
-						f.setStateError(peer, fmt.Errorf("receive: %v", err))
+						f.setStateError(ctx, peer, fmt.Errorf("receive: %v", err))
 					default:
 					}
 				}
 			case err := <-recvErrC:
-				f.setStateError(peer, fmt.Errorf("receive: %v", err))
+				f.setStateError(ctx, peer, fmt.Errorf("receive: %v", err))
 				select {
 				// Wait for sendLoop to send an optional NOTIFICATION and terminate.
 				case <-sendErrC:
@@ -932,7 +986,7 @@ func (f *fsm) run(peer *Peer) {
 				}
 			case <-f.stopC:
 				notifyC <- notification{bgp.BGP_ERROR_CEASE, bgp.BGP_ERROR_SUB_ADMINISTRATIVE_RESET}
-				f.setState(state_BGP_FSM_TERMINATE)
+				f.setState(ctx, state_BGP_FSM_TERMINATE)
 				select {
 				// Wait for sendLoop to transmit the NOTIFICATION and terminate.
 				case <-sendErrC:
@@ -952,7 +1006,7 @@ func (f *fsm) run(peer *Peer) {
 			if peer.dynamic {
 				nextState = state_BGP_FSM_TERMINATE
 			}
-			f.setState(nextState)
+			f.setState(ctx, nextState)
 
 		case state_BGP_FSM_TERMINATE:
 			if peer.dynamic {
@@ -967,7 +1021,7 @@ func (f *fsm) run(peer *Peer) {
 			return
 
 		default:
-			f.server.fatalf("reached invalid state")
+			panic("reached invalid state")
 		}
 	}
 }
