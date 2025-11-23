@@ -20,7 +20,7 @@ import (
 	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
 )
 
-func TestRouteFamily(t *testing.T) {
+func TestFamily(t *testing.T) {
 	for i, want := range []struct {
 		AFI  uint16
 		SAFI uint8
@@ -30,7 +30,7 @@ func TestRouteFamily(t *testing.T) {
 		{bgp.AFI_IP, bgp.SAFI_MULTICAST},
 		{bgp.AFI_IP6, bgp.SAFI_MULTICAST},
 	} {
-		a := NewRouteFamily(want.AFI, want.SAFI)
+		a := NewFamily(want.AFI, want.SAFI)
 		gotAFI, gotSAFI := a.Split()
 		if gotAFI != want.AFI {
 			t.Errorf("%v: got AFI %v, want %v", i, gotAFI, want.AFI)
@@ -41,18 +41,18 @@ func TestRouteFamily(t *testing.T) {
 	}
 }
 
-func TestRouteFamilyConstants(t *testing.T) {
+func TestFamilyConstants(t *testing.T) {
 	for i, c := range []struct {
 		AFI  uint16
 		SAFI uint8
-		Want RouteFamily
+		Want Family
 	}{
 		{bgp.AFI_IP, bgp.SAFI_UNICAST, IPv4Unicast},
 		{bgp.AFI_IP6, bgp.SAFI_UNICAST, IPv6Unicast},
-		{bgp.AFI_IP, bgp.SAFI_UNICAST, RouteFamily(bgp.RF_IPv4_UC)},
-		{bgp.AFI_IP6, bgp.SAFI_UNICAST, RouteFamily(bgp.RF_IPv6_UC)},
+		{bgp.AFI_IP, bgp.SAFI_UNICAST, Family(bgp.RF_IPv4_UC)},
+		{bgp.AFI_IP6, bgp.SAFI_UNICAST, Family(bgp.RF_IPv6_UC)},
 	} {
-		got := NewRouteFamily(c.AFI, c.SAFI)
+		got := NewFamily(c.AFI, c.SAFI)
 		if got != c.Want {
 			t.Errorf("%v: got %v, want %v", i, got, c.Want)
 		}

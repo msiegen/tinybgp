@@ -71,11 +71,11 @@ type Peer struct {
 	//
 	// Tables may be safely shared across multiple peers or by import and export
 	// use cases.
-	Import map[RouteFamily]*Table
+	Import map[Family]*Table
 
 	// Export stores the network reachability information to be announced to the
 	// peer. See the documentation on Import for usage details.
-	Export map[RouteFamily]*Table
+	Export map[Family]*Table
 
 	// ImportFilter decides whether to import a route into the import table and
 	// optionally modifies it. If not provided, the DefaultImportFilter method
@@ -143,7 +143,7 @@ func (p *Peer) transportAFI() uint16 {
 	return 0
 }
 
-func (p *Peer) supportsRouteFamily(rf RouteFamily) bool {
+func (p *Peer) supportsFamily(rf Family) bool {
 	return p.Import[rf] != nil || p.Export[rf] != nil
 }
 
