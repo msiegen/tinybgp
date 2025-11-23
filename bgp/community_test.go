@@ -136,3 +136,56 @@ func TestExtendedCommunity(t *testing.T) {
 		})
 	}
 }
+
+func TestLargeCommunityString(t *testing.T) {
+	for _, tc := range []struct {
+		Input string
+		Want  LargeCommunity
+	}{
+		{
+			Input: "64512:1:2",
+			Want:  LargeCommunity{64512, 1, 2},
+		},
+		{
+			Input: "65535:65281:65282",
+			Want:  LargeCommunity{0xffff, 0xff01, 0xff02},
+		},
+		{
+			Input: "4200000000:1200000000:3400000000",
+			Want:  LargeCommunity{4200000000, 1200000000, 3400000000},
+		},
+	} {
+		t.Run(tc.Input, func(t *testing.T) {
+			got, err := ParseLargeCommunity(tc.Input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.Want {
+				t.Errorf("got %v, want %v", got, tc.Want)
+			}
+			gotString := got.String()
+			if gotString != tc.Input {
+				t.Errorf("got %v, want %v", gotString, tc.Input)
+			}
+		})
+	}
+}
+
+func TestLargeCommunityStringError(t *testing.T) {
+	for _, tc := range []string{
+		"",
+		"1234",
+		"101202:456",
+		"4294967296:123:456",
+		"123:4294967296:456",
+		"123:456:4294967296",
+		"12:34:56:78",
+	} {
+		t.Run(tc, func(t *testing.T) {
+			_, err := ParseLargeCommunity(tc)
+			if err == nil {
+				t.Fatal("got success, want error")
+			}
+		})
+	}
+}

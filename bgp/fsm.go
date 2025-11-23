@@ -499,6 +499,14 @@ func (f *fsm) sendUpdate(c net.Conn, network netip.Prefix, attrs Attributes) err
 		}
 		a = append(a, bgp.NewPathAttributeCommunities(cs))
 	}
+	lcm := attrs.LargeCommunities()
+	if len(lcm) != 0 {
+		cs := make([]*bgp.LargeCommunity, 0, len(lcm))
+		for c := range lcm {
+			cs = append(cs, &bgp.LargeCommunity{c.ASN, c.Data1, c.Data2})
+		}
+		a = append(a, bgp.NewPathAttributeLargeCommunities(cs))
+	}
 	m := bgp.NewBGPUpdateMessage(nil, a, nlri)
 	return fsmSendMessage(c, m, defaultMessageTimeout)
 }
@@ -636,6 +644,7 @@ func (f *fsm) processUpdate(ctx context.Context, peerAddr netip.Addr, importFilt
 	)
 	communities := map[Community]bool{}
 	extendedCommunities := map[ExtendedCommunity]bool{}
+	largeCommunities := map[LargeCommunity]bool{}
 	for _, nlri := range m.NLRI {
 		// Announcement for IPv4 via an IPv4 nexthop
 		addr, _ := netip.AddrFromSlice(nlri.Prefix)
@@ -696,6 +705,10 @@ func (f *fsm) processUpdate(ctx context.Context, peerAddr netip.Addr, importFilt
 					}
 				}
 			}
+		case *bgp.PathAttributeLargeCommunities:
+			for _, v := range a.Values {
+				largeCommunities[LargeCommunity{v.ASN, v.LocalData1, v.LocalData2}] = true
+			}
 		}
 	}
 	rf := NewFamily(afi, safi)
@@ -728,6 +741,7 @@ func (f *fsm) processUpdate(ctx context.Context, peerAddr netip.Addr, importFilt
 		attrs.SetPath(asPath)
 		attrs.SetCommunities(communities)
 		attrs.SetExtendedCommunities(extendedCommunities)
+		attrs.SetLargeCommunities(largeCommunities)
 		if err := importFilter(nlri, &attrs); err != nil {
 			if errors.Is(err, ErrDiscard) {
 				f.session.Logger.Log(ctx, LevelUpdates, "import filter discarded", "nlri", nlri)
