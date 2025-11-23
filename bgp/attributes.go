@@ -64,6 +64,8 @@ type Attributes struct {
 	communities string
 	// extendedCommunities is the serialized set of extended communities.
 	extendedCommunities string
+	// largeCommunities is the serialized set of large communities.
+	largeCommunities string
 }
 
 func deserializePath(s string) []uint32 {
@@ -221,6 +223,53 @@ func serializeExtendedCommunities(cs map[ExtendedCommunity]bool) string {
 // NOTE: This is experimental. See the ExtendedCommunity type for details.
 func (a *Attributes) SetExtendedCommunities(cs map[ExtendedCommunity]bool) {
 	a.extendedCommunities = serializeExtendedCommunities(cs)
+}
+
+func deserializeLargeCommunities(s string) map[LargeCommunity]bool {
+	if s == "" {
+		return nil
+	}
+	b := []byte(s)
+	cs := map[LargeCommunity]bool{}
+	for i := 0; i < len(s)/12; i++ {
+		cs[LargeCommunity{
+			binary.LittleEndian.Uint32(b[12*i : 12*i+4]),
+			binary.LittleEndian.Uint32(b[12*i+4 : 12*i+8]),
+			binary.LittleEndian.Uint32(b[12*i+8 : 12*i+12]),
+		}] = true
+	}
+	return cs
+}
+
+// LargeCommunities returns the BGP large communities as defined by
+// https://datatracker.ietf.org/doc/html/rfc8092
+func (a *Attributes) LargeCommunities() map[LargeCommunity]bool {
+	return deserializeLargeCommunities(a.largeCommunities)
+}
+
+func serializeLargeCommunities(cs map[LargeCommunity]bool) string {
+	sorted := make([]LargeCommunity, 0, len(cs))
+	for c, ok := range cs {
+		if ok {
+			sorted = append(sorted, c)
+		}
+	}
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].LessThan(sorted[j])
+	})
+	b := make([]byte, 12*len(sorted))
+	for i, c := range sorted {
+		binary.LittleEndian.PutUint32(b[12*i:12*i+4], c.ASN)
+		binary.LittleEndian.PutUint32(b[12*i+4:12*i+8], c.Data1)
+		binary.LittleEndian.PutUint32(b[12*i+8:12*i+12], c.Data2)
+	}
+	return string(b)
+}
+
+// SetLargeCommunities sets the BGP communities as defined by
+// https://datatracker.ietf.org/doc/html/rfc8092
+func (a *Attributes) SetLargeCommunities(cs map[LargeCommunity]bool) {
+	a.largeCommunities = serializeLargeCommunities(cs)
 }
 
 // localPref returns the effective value of the local preference,

@@ -135,3 +135,54 @@ func (c ExtendedCommunity) String() string {
 	}
 	return fmt.Sprintf("%016x", uint64(c))
 }
+
+// LargeCommunity is a BGP large community as defined in
+// https://datatracker.ietf.org/doc/html/rfc8092
+type LargeCommunity struct {
+	ASN, Data1, Data2 uint32
+}
+
+// ParseLargeCommunity parses a large community from a string like "64512:1:2".
+func ParseLargeCommunity(c string) (LargeCommunity, error) {
+	parts := strings.Split(c, ":")
+	if len(parts) != 3 {
+		return LargeCommunity{}, fmt.Errorf("large community is not three parts: %q", c)
+	}
+	asn, err := strconv.ParseUint(parts[0], 10, 32)
+	if err != nil {
+		return LargeCommunity{}, fmt.Errorf("invalid large community asn: %v", err)
+	}
+	data1, err := strconv.ParseUint(parts[1], 10, 32)
+	if err != nil {
+		return LargeCommunity{}, fmt.Errorf("invalid large community data 1: %v", err)
+	}
+	data2, err := strconv.ParseUint(parts[2], 10, 32)
+	if err != nil {
+		return LargeCommunity{}, fmt.Errorf("invalid large community data 2: %v", err)
+	}
+	return LargeCommunity{uint32(asn), uint32(data1), uint32(data2)}, nil
+}
+
+// String converts a community to a colon separated string like "64512:1:2".
+func (c LargeCommunity) String() string {
+	return fmt.Sprintf("%v:%v:%v", c.ASN, c.Data1, c.Data2)
+}
+
+// LessThan returns whether a sorts ahead of b.
+func (a LargeCommunity) LessThan(b LargeCommunity) bool {
+	switch {
+	case a.ASN < b.ASN:
+		return true
+	case a.ASN > b.ASN:
+		return false
+	default:
+		switch {
+		case a.Data1 < b.Data1:
+			return true
+		case a.Data1 > b.Data1:
+			return false
+		default:
+			return a.Data2 < b.Data2
+		}
+	}
+}

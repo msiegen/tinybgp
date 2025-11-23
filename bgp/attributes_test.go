@@ -165,6 +165,67 @@ func TestAttributesCommunities(t *testing.T) {
 	}
 }
 
+func TestAttributesLargeCommunities(t *testing.T) {
+	// Create attributes with no large communities.
+	attrs := Attributes{}
+	cs := attrs.LargeCommunities()
+	if cs != nil {
+		t.Errorf("got initial empty large communities map %v, want nil", cs)
+	}
+
+	// Set an empty map.
+	cs = map[LargeCommunity]bool{}
+	attrs.SetLargeCommunities(cs)
+	cs = attrs.LargeCommunities()
+	if cs != nil {
+		t.Errorf("got modified empty large communities map %v, want nil", cs)
+	}
+
+	// Set a map with only false values.
+	c123 := LargeCommunity{1, 2, 3}
+	cs = map[LargeCommunity]bool{c123: false}
+	attrs.SetLargeCommunities(cs)
+	cs = attrs.LargeCommunities()
+	if cs != nil {
+		t.Errorf("got modified empty large communities map with false entries %v, want nil", cs)
+	}
+
+	// Add one large community.
+	cs = map[LargeCommunity]bool{}
+	cs[c123] = true
+	attrs.SetLargeCommunities(cs)
+
+	// Add two more large communities.
+	c345 := LargeCommunity{3, 4, 5}
+	c567 := LargeCommunity{5, 6, 7}
+	cs = attrs.LargeCommunities()
+	cs[c345] = true
+	cs[c567] = true
+	attrs.SetLargeCommunities(cs)
+
+	// Verify that the first large community is present.
+	cs = attrs.LargeCommunities()
+	if !cs[c123] {
+		t.Errorf("got %v=%v, want true", c123, false)
+	}
+
+	// Remove the first large community.
+	delete(cs, c123)
+	attrs.SetLargeCommunities(cs)
+	cs = attrs.LargeCommunities()
+	if cs[c123] {
+		t.Errorf("got %v=%v, want false", c123, true)
+	}
+
+	// Verify that the second and third large community are present.
+	if !cs[c345] {
+		t.Errorf("got %v=%v, want true", c345, false)
+	}
+	if !cs[c567] {
+		t.Errorf("got %v=%v, want true", c567, false)
+	}
+}
+
 func TestSortAttributes(t *testing.T) {
 	a1 := Attributes{LocalPref: 200, HasLocalPref: true}
 	a1.SetPath([]uint32{1, 2, 3, 4, 5})
