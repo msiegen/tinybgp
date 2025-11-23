@@ -76,7 +76,7 @@ func TestServer(t *testing.T) {
 		LeftPeer    *Peer
 		RightServer *Server
 		RightPeer   *Peer
-		Family      RouteFamily
+		Family      Family
 		Announce    string
 	}{
 		{
@@ -89,7 +89,7 @@ func TestServer(t *testing.T) {
 			LeftPeer: &Peer{
 				ASN:     64522,
 				Passive: true,
-				Export:  map[RouteFamily]*Table{IPv6Unicast: &Table{}},
+				Export:  map[Family]*Table{IPv6Unicast: &Table{}},
 			},
 			RightServer: &Server{
 				RouterID: "100.64.0.2",
@@ -97,7 +97,7 @@ func TestServer(t *testing.T) {
 			},
 			RightPeer: &Peer{
 				ASN:    64521,
-				Import: map[RouteFamily]*Table{IPv6Unicast: &Table{}},
+				Import: map[Family]*Table{IPv6Unicast: &Table{}},
 			},
 			Family:   IPv6Unicast,
 			Announce: "2001:db8:1::/48",
@@ -112,7 +112,7 @@ func TestServer(t *testing.T) {
 			LeftPeer: &Peer{
 				ASN:     64522,
 				Passive: true,
-				Export:  map[RouteFamily]*Table{IPv4Unicast: &Table{}},
+				Export:  map[Family]*Table{IPv4Unicast: &Table{}},
 			},
 			RightServer: &Server{
 				RouterID: "100.64.0.2",
@@ -120,7 +120,7 @@ func TestServer(t *testing.T) {
 			},
 			RightPeer: &Peer{
 				ASN:    64521,
-				Import: map[RouteFamily]*Table{IPv4Unicast: &Table{}},
+				Import: map[Family]*Table{IPv4Unicast: &Table{}},
 			},
 			Family:   IPv4Unicast,
 			Announce: "192.0.2.0/24",
@@ -135,7 +135,7 @@ func TestServer(t *testing.T) {
 			LeftPeer: &Peer{
 				ASN:     64522,
 				Passive: true,
-				Export:  map[RouteFamily]*Table{IPv4Unicast: &Table{}},
+				Export:  map[Family]*Table{IPv4Unicast: &Table{}},
 			},
 			RightServer: &Server{
 				RouterID: "100.64.0.2",
@@ -143,7 +143,7 @@ func TestServer(t *testing.T) {
 			},
 			RightPeer: &Peer{
 				ASN:    64521,
-				Import: map[RouteFamily]*Table{IPv4Unicast: &Table{}},
+				Import: map[Family]*Table{IPv4Unicast: &Table{}},
 			},
 			Family:   IPv4Unicast,
 			Announce: "192.0.2.0/24",
@@ -157,7 +157,7 @@ func TestServer(t *testing.T) {
 			},
 			LeftPeer: &Peer{
 				ASN:    64522,
-				Export: map[RouteFamily]*Table{IPv6Unicast: &Table{}},
+				Export: map[Family]*Table{IPv6Unicast: &Table{}},
 			},
 			RightServer: &Server{
 				RouterID: "100.64.0.2",
@@ -165,7 +165,7 @@ func TestServer(t *testing.T) {
 			},
 			RightPeer: &Peer{
 				ASN:    64521,
-				Import: map[RouteFamily]*Table{IPv6Unicast: &Table{}},
+				Import: map[Family]*Table{IPv6Unicast: &Table{}},
 			},
 			Family:   IPv6Unicast,
 			Announce: "2001:db8:1::/48",
@@ -179,7 +179,7 @@ func TestServer(t *testing.T) {
 			},
 			LeftPeer: &Peer{
 				ASN:    64522,
-				Export: map[RouteFamily]*Table{IPv6Unicast: &Table{}},
+				Export: map[Family]*Table{IPv6Unicast: &Table{}},
 			},
 			RightServer: &Server{
 				RouterID: "100.64.0.2",
@@ -187,7 +187,7 @@ func TestServer(t *testing.T) {
 			},
 			RightPeer: &Peer{
 				ASN:    64523,
-				Import: map[RouteFamily]*Table{IPv6Unicast: &Table{}},
+				Import: map[Family]*Table{IPv6Unicast: &Table{}},
 			},
 			Family:   IPv6Unicast,
 			Announce: "2001:db8:1::/48",
@@ -201,7 +201,7 @@ func TestServer(t *testing.T) {
 			},
 			LeftPeer: &Peer{
 				ASN:           64522,
-				Export:        map[RouteFamily]*Table{IPv6Unicast: &Table{}},
+				Export:        map[Family]*Table{IPv6Unicast: &Table{}},
 				DialerControl: tcpmd5.DialerControl("hunter2"),
 			},
 			RightServer: &Server{
@@ -211,7 +211,7 @@ func TestServer(t *testing.T) {
 			RightPeer: &Peer{
 				ASN:               64521,
 				Passive:           true,
-				Import:            map[RouteFamily]*Table{IPv6Unicast: &Table{}},
+				Import:            map[Family]*Table{IPv6Unicast: &Table{}},
 				ConfigureListener: tcpmd5.ConfigureListener("::1", "hunter2"),
 			},
 			Family:   IPv6Unicast,
@@ -226,7 +226,7 @@ func TestServer(t *testing.T) {
 			},
 			LeftPeer: &Peer{
 				ASN:           64522,
-				Export:        map[RouteFamily]*Table{IPv4Unicast: &Table{}},
+				Export:        map[Family]*Table{IPv4Unicast: &Table{}},
 				DialerControl: tcpmd5.DialerControl("hunter2"),
 			},
 			RightServer: &Server{
@@ -236,7 +236,7 @@ func TestServer(t *testing.T) {
 			RightPeer: &Peer{
 				ASN:               64521,
 				Passive:           true,
-				Import:            map[RouteFamily]*Table{IPv4Unicast: &Table{}},
+				Import:            map[Family]*Table{IPv4Unicast: &Table{}},
 				ConfigureListener: tcpmd5.ConfigureListener("127.0.0.1", "hunter2"),
 			},
 			Family:   IPv4Unicast,

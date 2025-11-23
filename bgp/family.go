@@ -22,26 +22,26 @@ import (
 )
 
 const (
-	IPv4Unicast = RouteFamily(bgp.AFI_IP)<<16 | RouteFamily(bgp.SAFI_UNICAST)
-	IPv6Unicast = RouteFamily(bgp.AFI_IP6)<<16 | RouteFamily(bgp.SAFI_UNICAST)
+	IPv4Unicast = Family(bgp.AFI_IP)<<16 | Family(bgp.SAFI_UNICAST)
+	IPv6Unicast = Family(bgp.AFI_IP6)<<16 | Family(bgp.SAFI_UNICAST)
 )
 
-type RouteFamily uint32
+type Family uint32
 
-func NewRouteFamily(afi uint16, safi uint8) RouteFamily {
-	return RouteFamily(afi)<<16 | RouteFamily(safi)
+func NewFamily(afi uint16, safi uint8) Family {
+	return Family(afi)<<16 | Family(safi)
 }
 
-func (f RouteFamily) Split() (uint16, uint8) {
+func (f Family) Split() (uint16, uint8) {
 	return uint16(f >> 16), uint8(f & 0xffff)
 }
 
-func (f RouteFamily) String() string {
+func (f Family) String() string {
 	afi, safi := f.Split()
 	return fmt.Sprintf("%v:%v", afi, safi)
 }
 
-func RouteFamilyFor(a netip.Addr) RouteFamily {
+func FamilyFor(a netip.Addr) Family {
 	switch {
 	case a.Is4():
 		return IPv4Unicast

@@ -72,9 +72,9 @@ func formatState(s bgp.FSMState) string {
 
 // session holds data with a lifetime matching a BGP session TCP connection.
 type session struct {
-	// RouteFamilies is the intersection of AFI/SAFI tuples that are supported by
+	// Families is the intersection of AFI/SAFI tuples that are supported by
 	// both the local server and the peer.
-	RouteFamilies map[RouteFamily]bool
+	Families map[Family]bool
 	// PeerASN is the peer's AS number.
 	PeerASN uint32
 	// LocalIP holds a copy of the local IP address, used to populate the
@@ -83,9 +83,9 @@ type session struct {
 	// Tracked holds the routes considered for export to this peer. It includes
 	// the routes that were announced to the peer as well as the ones suppressed
 	// by an export filter.
-	Tracked map[RouteFamily]map[netip.Prefix]unique.Handle[Attributes]
+	Tracked map[Family]map[netip.Prefix]unique.Handle[Attributes]
 	// Suppressed holds the routes that were rejected by an export filter.
-	Suppressed map[RouteFamily]map[netip.Prefix]struct{}
+	Suppressed map[Family]map[netip.Prefix]struct{}
 	// RecvDone is initialized when the receive loop starts and closed when the
 	// receive loop terminates. It provides a synchronization signal for session
 	// teardown to ensure that cleanup doesn't run while the receive loop might
@@ -130,9 +130,9 @@ func (s *session) setPeerHostDomain(host, domain string) {
 // initCache initializes the cache of which paths have been sent to the peer.
 // It must be called upon connection establishment.
 func (s *session) initCache() {
-	s.Tracked = map[RouteFamily]map[netip.Prefix]unique.Handle[Attributes]{}
-	s.Suppressed = map[RouteFamily]map[netip.Prefix]struct{}{}
-	for rf := range s.RouteFamilies {
+	s.Tracked = map[Family]map[netip.Prefix]unique.Handle[Attributes]{}
+	s.Suppressed = map[Family]map[netip.Prefix]struct{}{}
+	for rf := range s.Families {
 		s.Tracked[rf] = map[netip.Prefix]unique.Handle[Attributes]{}
 		s.Suppressed[rf] = map[netip.Prefix]struct{}{}
 	}
@@ -292,11 +292,11 @@ func (f *fsm) sendOpen(c net.Conn, transportAFI uint16) error {
 		caps = append(caps, bgp.NewCapFQDN(f.server.Hostname, f.server.Domainname))
 	}
 	caps = append(caps, bgp.NewCapFourOctetASNumber(f.server.ASN))
-	supportsIPv4 := f.peer.supportsRouteFamily(IPv4Unicast)
+	supportsIPv4 := f.peer.supportsFamily(IPv4Unicast)
 	if supportsIPv4 {
 		caps = append(caps, bgp.NewCapMultiProtocol(bgp.RF_IPv4_UC))
 	}
-	supportsIPv6 := f.peer.supportsRouteFamily(IPv6Unicast)
+	supportsIPv6 := f.peer.supportsFamily(IPv6Unicast)
 	if supportsIPv6 {
 		caps = append(caps, bgp.NewCapMultiProtocol(bgp.RF_IPv6_UC))
 	}
@@ -358,7 +358,7 @@ func validateOpen(o *bgp.BGPOpen, transportAFI uint16, peer *Peer, serverLogger 
 	}
 	var fourByteAS uint32
 	sess := newSession(serverLogger, peer.Addr) // create new session
-	sess.RouteFamilies = map[RouteFamily]bool{}
+	sess.Families = map[Family]bool{}
 	extendedNexthops := map[bgp.CapExtendedNexthopTuple]bool{}
 	for _, cc := range caps {
 		switch c := cc.(type) {
@@ -366,10 +366,10 @@ func validateOpen(o *bgp.BGPOpen, transportAFI uint16, peer *Peer, serverLogger 
 			fourByteAS = c.CapValue
 		case *bgp.CapMultiProtocol:
 			switch {
-			case c.CapValue == bgp.RF_IPv4_UC && peer.supportsRouteFamily(IPv4Unicast):
-				sess.RouteFamilies[IPv4Unicast] = true
-			case c.CapValue == bgp.RF_IPv6_UC && peer.supportsRouteFamily(IPv6Unicast):
-				sess.RouteFamilies[IPv6Unicast] = true
+			case c.CapValue == bgp.RF_IPv4_UC && peer.supportsFamily(IPv4Unicast):
+				sess.Families[IPv4Unicast] = true
+			case c.CapValue == bgp.RF_IPv6_UC && peer.supportsFamily(IPv6Unicast):
+				sess.Families[IPv6Unicast] = true
 			}
 		case *bgp.CapExtendedNexthop:
 			for _, t := range c.Tuples {
@@ -396,17 +396,17 @@ func validateOpen(o *bgp.BGPOpen, transportAFI uint16, peer *Peer, serverLogger 
 	switch transportAFI {
 	case bgp.AFI_IP:
 		if !extendedNexthops[bgp.CapExtendedNexthopTuple{bgp.AFI_IP6, bgp.SAFI_UNICAST, bgp.AFI_IP}] {
-			delete(sess.RouteFamilies, IPv6Unicast)
+			delete(sess.Families, IPv6Unicast)
 		}
 	case bgp.AFI_IP6:
 		if !extendedNexthops[bgp.CapExtendedNexthopTuple{bgp.AFI_IP, bgp.SAFI_UNICAST, bgp.AFI_IP6}] {
-			delete(sess.RouteFamilies, IPv4Unicast)
+			delete(sess.Families, IPv4Unicast)
 		}
 	default:
 		return session{}, 0, errors.New("unable to determine transport AFI")
 	}
 	// At least one of IPv4 or IPv6 unicast must be supported.
-	if !sess.RouteFamilies[IPv4Unicast] && !sess.RouteFamilies[IPv6Unicast] {
+	if !sess.Families[IPv4Unicast] && !sess.Families[IPv6Unicast] {
 		return session{}, bgp.BGP_ERROR_SUB_UNSUPPORTED_CAPABILITY, errors.New("must support at least one of ipv4 or ipv6")
 	}
 	// Validate the peer AS number, if we know what it should be.
@@ -527,7 +527,7 @@ func (f *fsm) sendWithdraw(c net.Conn, network netip.Prefix) error {
 func (f *fsm) sendUpdates(ctx context.Context, c net.Conn, reevaluate bool) (bool, error) {
 	var alive bool
 	for rf, table := range f.peer.Export {
-		if !f.session.RouteFamilies[rf] {
+		if !f.session.Families[rf] {
 			// Skip route families not supported by the peer.
 			continue
 		}
@@ -698,8 +698,8 @@ func (f *fsm) processUpdate(ctx context.Context, peerAddr netip.Addr, importFilt
 			}
 		}
 	}
-	rf := NewRouteFamily(afi, safi)
-	if !f.session.RouteFamilies[rf] {
+	rf := NewFamily(afi, safi)
+	if !f.session.Families[rf] {
 		// Ignore route families not previously negotiated with the peer. A well
 		// behaved peer should not send them.
 		return
@@ -803,7 +803,7 @@ func (f *fsm) recvLoop(ctx context.Context, c net.Conn, peerAddr netip.Addr, imp
 // removePaths removes all paths from the specified peer.
 func (f *fsm) removePaths(peerAddr netip.Addr) {
 	for rf, table := range f.peer.Import {
-		if !f.session.RouteFamilies[rf] {
+		if !f.session.Families[rf] {
 			// Skip route families not previously negotiated with the peer.
 			continue
 		}
