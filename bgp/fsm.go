@@ -725,7 +725,7 @@ func (f *fsm) processUpdate(ctx context.Context, peerAddr netip.Addr, importFilt
 	}
 	for _, nlri := range withdrawn {
 		if table.hasNetwork(nlri) {
-			table.Network(nlri).RemovePath(peerAddr)
+			table.RemovePath(nlri, peerAddr)
 		}
 	}
 	if nexthop.IsLinkLocalUnicast() {
@@ -751,12 +751,12 @@ func (f *fsm) processUpdate(ctx context.Context, peerAddr netip.Addr, importFilt
 			// If an NLRI was previously accepted but should now be filtered,
 			// remove it from the table.
 			if table.hasNetwork(nlri) {
-				table.Network(nlri).RemovePath(peerAddr)
+				table.RemovePath(nlri, peerAddr)
 			}
 			continue
 		}
 		f.session.Logger.Log(ctx, LevelUpdates, "importing", "nlri", nlri)
-		table.Network(nlri).AddPath(attrs)
+		table.AddPath(nlri, attrs)
 	}
 }
 
@@ -821,7 +821,7 @@ func (f *fsm) removePaths(peerAddr netip.Addr) {
 			// Skip route families not previously negotiated with the peer.
 			continue
 		}
-		for _, n := range table.Networks() {
+		for _, n := range table.allNetworks() {
 			n.RemovePath(peerAddr)
 		}
 	}

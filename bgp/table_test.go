@@ -26,9 +26,9 @@ func TestTable(t *testing.T) {
 	p1 := netip.MustParsePrefix("2001:db8:1::/48")
 	p2 := netip.MustParsePrefix("2001:db8:2::/48")
 
-	n1 := table.Network(p1)
-	n2 := table.Network(p2)
-	n3 := table.Network(p1)
+	n1 := table.network(p1)
+	n2 := table.network(p2)
+	n3 := table.network(p1)
 
 	if got, want := len(table.networks), 2; got != want {
 		t.Errorf("got %v prefixes, want %v", got, want)
@@ -43,7 +43,7 @@ func TestTable(t *testing.T) {
 	}
 
 	p4 := netip.MustParsePrefix("2001:db8:4::/48")
-	table.Network(p4)
+	table.network(p4)
 
 	if got, want := len(table.networks), 3; got != want {
 		t.Errorf("got %v prefixes, want %v", got, want)
@@ -66,7 +66,7 @@ func TestTable(t *testing.T) {
 	}
 
 	var networksCount int
-	for _, _ = range table.Networks() {
+	for _, _ = range table.allNetworks() {
 		networksCount++
 	}
 	if networksCount != 2 {
@@ -74,7 +74,7 @@ func TestTable(t *testing.T) {
 	}
 
 	var bestRoutesCount int
-	for _, _ = range table.Networks() {
+	for _, _ = range table.allNetworks() {
 		bestRoutesCount++
 	}
 	if bestRoutesCount != 2 {
@@ -105,7 +105,7 @@ func TestWatchBest(t *testing.T) {
 	}
 
 	// Announce prefix 1
-	table.Network(p1).AddPath(a1)
+	table.AddPath(p1, a1)
 	steps := []struct {
 		wantNLRI  netip.Prefix
 		wantAttrs Attributes
@@ -117,7 +117,7 @@ func TestWatchBest(t *testing.T) {
 			wantAttrs: a1,
 			// Announce route 2 with path length 2
 			op: func(nlri netip.Prefix, attrs Attributes) {
-				table.Network(p2).AddPath(a2a)
+				table.AddPath(p2, a2a)
 			},
 		},
 		{
@@ -126,7 +126,7 @@ func TestWatchBest(t *testing.T) {
 			wantAttrs: a2a,
 			// Announce route 2 with path length 1
 			op: func(nlri netip.Prefix, attrs Attributes) {
-				table.Network(p2).AddPath(a2b)
+				table.AddPath(p2, a2b)
 			},
 		},
 		{
@@ -135,7 +135,7 @@ func TestWatchBest(t *testing.T) {
 			wantAttrs: a2b,
 			// Withdraw route 1
 			op: func(nlri netip.Prefix, attrs Attributes) {
-				table.Network(p1).RemovePath(nh1)
+				table.RemovePath(p1, nh1)
 			},
 		},
 		{
@@ -144,7 +144,7 @@ func TestWatchBest(t *testing.T) {
 			wantAttrs: Attributes{},
 			// Withdraw route 2 with path length 1
 			op: func(nlri netip.Prefix, attrs Attributes) {
-				table.Network(p2).RemovePath(nh2b)
+				table.RemovePath(p2, nh2b)
 			},
 		},
 		{
