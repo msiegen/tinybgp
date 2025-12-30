@@ -31,28 +31,28 @@ type Table struct {
 
 	version  atomic.Int64
 	mu       sync.Mutex
-	networks map[netip.Prefix]*Network
+	networks map[netip.Prefix]*network
 }
 
-// Network returns a single network. The first time it's called for a given
+// network returns a single network. The first time it's called for a given
 // NLRI, it creates an entry in the table with no paths.
-func (t *Table) Network(nlri netip.Prefix) *Network {
+func (t *Table) network(nlri netip.Prefix) *network {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if n := t.networks[nlri]; n != nil {
 		return n
 	}
 	if t.networks == nil {
-		t.networks = map[netip.Prefix]*Network{}
+		t.networks = map[netip.Prefix]*network{}
 	}
-	n := &Network{version: &t.version}
+	n := &network{version: &t.version}
 	t.networks[nlri] = n
 	return n
 }
 
-// Networks returns an iterator over the networks.
-func (t *Table) Networks() iter.Seq2[netip.Prefix, *Network] {
-	return func(yield func(netip.Prefix, *Network) bool) {
+// allNetworks returns an iterator over the networks.
+func (t *Table) allNetworks() iter.Seq2[netip.Prefix, *network] {
+	return func(yield func(netip.Prefix, *network) bool) {
 		t.mu.Lock()
 		for p, n := range t.networks {
 			t.mu.Unlock()
@@ -81,6 +81,18 @@ func (t *Table) hasNetwork(nlri netip.Prefix) bool {
 		return false
 	}
 	return n.hasPath()
+}
+
+// AddPath adds a path to the given network.
+// It replaces any previously added path from the same peer.
+func (t *Table) AddPath(nlri netip.Prefix, a Attributes) {
+	t.network(nlri).AddPath(a)
+}
+
+// RemovePath removes the path that goes via the specified peer.
+// It is safe to call even if no path from the peer is present.
+func (t *Table) RemovePath(nlri netip.Prefix, peer netip.Addr) {
+	t.network(nlri).RemovePath(peer)
 }
 
 // Routes returns an iterator that yields all the routes for one network.

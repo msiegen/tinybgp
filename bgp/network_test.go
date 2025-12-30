@@ -22,7 +22,7 @@ import (
 
 func TestNetworkPaths(t *testing.T) {
 	var version atomic.Int64
-	n := &Network{version: &version}
+	n := &network{version: &version}
 	p1 := netip.MustParseAddr("2001:db8::1")
 	a1 := Attributes{
 		Peer:    p1,
