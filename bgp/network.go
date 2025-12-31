@@ -33,14 +33,6 @@ type network struct {
 	numBestPaths int
 }
 
-// appendBestPaths appends the best paths to dst.
-func (n *network) appendBestPaths(dst []unique.Handle[Attributes]) []unique.Handle[Attributes] {
-	for i := 0; i < n.numBestPaths; i++ {
-		dst = append(dst, n.paths[i])
-	}
-	return dst
-}
-
 // addPath adds a path by which this network can be reached.
 // It replaces any previously added path from the same peer.
 func (n *network) addPath(table *Table, a Attributes) {
@@ -53,14 +45,14 @@ func (n *network) addPath(table *Table, a Attributes) {
 		}
 		if old.Value().Peer == a.Peer {
 			// We previously got a path from this same peer. Replace it.
-			bestPaths = n.appendBestPaths(bestPaths)
+			bestPaths = append(bestPaths, n.paths[:n.numBestPaths]...)
 			n.paths[i] = ah
 			n.sortPaths(table, bestPaths)
 			return
 		}
 	}
 	// First time we've seen this path. Add it.
-	bestPaths = n.appendBestPaths(bestPaths)
+	bestPaths = append(bestPaths, n.paths[:n.numBestPaths]...)
 	n.paths = append(n.paths, ah)
 	n.sortPaths(table, bestPaths)
 }
@@ -69,16 +61,11 @@ func (n *network) addPath(table *Table, a Attributes) {
 // It is safe to call even if no path from the peer is present.
 func (n *network) removePath(table *Table, peer netip.Addr) {
 	bestPaths := make([]unique.Handle[Attributes], 0, initialBestPathsCapacity)
-	var deleted bool
+	bestPaths = append(bestPaths, n.paths[:n.numBestPaths]...)
 	paths := slices.DeleteFunc(n.paths, func(old unique.Handle[Attributes]) bool {
-		ok := old.Value().Peer == peer
-		if ok && !deleted {
-			deleted = true
-			bestPaths = n.appendBestPaths(bestPaths)
-		}
-		return ok
+		return old.Value().Peer == peer
 	})
-	if !deleted {
+	if len(paths) == len(n.paths) {
 		// No path was removed. This is fine.
 		return
 	}
@@ -116,14 +103,6 @@ func (n *network) sortPaths(table *Table, bestPaths []unique.Handle[Attributes])
 	// One of the best paths has changed.
 	n.numBestPaths = numBestPaths
 	n.version = table.version.Add(1)
-}
-
-// allPaths returns a copy of all paths to the network.
-func (n *network) allPaths() []unique.Handle[Attributes] {
-	if len(n.paths) == 0 {
-		return nil
-	}
-	return slices.Clone(n.paths)
 }
 
 var (
