@@ -37,34 +37,15 @@ type Table struct {
 // network returns a single network. The first time it's called for a given
 // NLRI, it creates an entry in the table with no paths.
 func (t *Table) network(nlri netip.Prefix) *network {
-	t.mu.Lock()
-	defer t.mu.Unlock()
 	if n := t.networks[nlri]; n != nil {
 		return n
 	}
 	if t.networks == nil {
 		t.networks = map[netip.Prefix]*network{}
 	}
-	n := &network{version: &t.version}
+	n := &network{}
 	t.networks[nlri] = n
 	return n
-}
-
-// allNetworks returns an iterator over the networks.
-func (t *Table) allNetworks() iter.Seq2[netip.Prefix, *network] {
-	return func(yield func(netip.Prefix, *network) bool) {
-		t.mu.Lock()
-		for p, n := range t.networks {
-			t.mu.Unlock()
-			if n.hasPath() {
-				if !yield(p, n) {
-					return
-				}
-			}
-			t.mu.Lock()
-		}
-		t.mu.Unlock()
-	}
 }
 
 // hasNetwork returns whether the NLRI is in the table. It's an optimization
@@ -86,13 +67,26 @@ func (t *Table) hasNetwork(nlri netip.Prefix) bool {
 // AddPath adds a path to the given network.
 // It replaces any previously added path from the same peer.
 func (t *Table) AddPath(nlri netip.Prefix, a Attributes) {
-	t.network(nlri).AddPath(a)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.network(nlri).addPath(t, a)
 }
 
 // RemovePath removes the path that goes via the specified peer.
 // It is safe to call even if no path from the peer is present.
 func (t *Table) RemovePath(nlri netip.Prefix, peer netip.Addr) {
-	t.network(nlri).RemovePath(peer)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.network(nlri).removePath(t, peer)
+}
+
+// removePathsFrom removes all paths via the specified peer.
+func (t *Table) removePathsFrom(peer netip.Addr) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, n := range t.networks {
+		n.removePath(t, peer)
+	}
 }
 
 // Routes returns an iterator that yields all the routes for one network.
@@ -100,11 +94,13 @@ func (t *Table) Routes(nlri netip.Prefix) iter.Seq[Attributes] {
 	return func(yield func(Attributes) bool) {
 		t.mu.Lock()
 		n, ok := t.networks[nlri]
-		t.mu.Unlock()
 		if !ok {
+			t.mu.Unlock()
 			return
 		}
-		for _, attrs := range n.allPaths(t) {
+		ap := n.allPaths()
+		t.mu.Unlock()
+		for _, attrs := range ap {
 			if !yield(attrs.Value()) {
 				return
 			}
@@ -117,8 +113,9 @@ func (t *Table) AllRoutes() iter.Seq2[netip.Prefix, Attributes] {
 	return func(yield func(netip.Prefix, Attributes) bool) {
 		t.mu.Lock()
 		for p, n := range t.networks {
+			ap := n.allPaths()
 			t.mu.Unlock()
-			for _, attrs := range n.allPaths(t) {
+			for _, attrs := range ap {
 				if !yield(p, attrs.Value()) {
 					return
 				}
@@ -134,8 +131,9 @@ func (t *Table) bestRoutes() iter.Seq2[netip.Prefix, unique.Handle[Attributes]] 
 	return func(yield func(netip.Prefix, unique.Handle[Attributes]) bool) {
 		t.mu.Lock()
 		for p, n := range t.networks {
+			attrs, ok := n.bestPath()
 			t.mu.Unlock()
-			if attrs, ok := n.bestPath(t); ok {
+			if ok {
 				if !yield(p, attrs) {
 					return
 				}
@@ -239,8 +237,9 @@ func WatchBestMultiPath(t ...*Table) iter.Seq2[netip.Prefix, []Attributes] {
 			for i, t := range t {
 				t.mu.Lock()
 				for nlri, n := range t.networks {
+					ahs, version, ok := n.bestMultiPath(versions[i][nlri])
 					t.mu.Unlock()
-					if ahs, version, ok := n.bestMultiPath(t, versions[i][nlri]); ok {
+					if ok {
 						versions[i][nlri] = version
 						var attrss []Attributes
 						if len(ahs) != 0 {

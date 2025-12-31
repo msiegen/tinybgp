@@ -17,29 +17,35 @@ package bgp
 import (
 	"net/netip"
 	"slices"
-	"sync"
-	"sync/atomic"
 	"unique"
 )
+
+// initialBestPathsCapacity is the initial capacity of the slice that holds a
+// copy of the old best paths during a mutation. If the number of best paths
+// exceeds this, the temporary copy will escape to the heap.
+const initialBestPathsCapacity = 16
 
 // A network represents a range of addresses with a common prefix that can be
 // reached by zero or more distinct paths.
 type network struct {
-	version          *atomic.Int64 // shared counter for all networks in the table
-	mu               sync.Mutex
-	paths            []unique.Handle[Attributes]
-	pathsVersion     int64
-	bestPaths        []unique.Handle[Attributes]
-	bestPathsVersion int64
-	sorted           bool
+	paths        []unique.Handle[Attributes]
+	version      int64
+	numBestPaths int
 }
 
-// AddPath adds a path by which this network can be reached.
+// appendBestPaths appends the best paths to dst.
+func (n *network) appendBestPaths(dst []unique.Handle[Attributes]) []unique.Handle[Attributes] {
+	for i := 0; i < n.numBestPaths; i++ {
+		dst = append(dst, n.paths[i])
+	}
+	return dst
+}
+
+// addPath adds a path by which this network can be reached.
 // It replaces any previously added path from the same peer.
-func (n *network) AddPath(a Attributes) {
+func (n *network) addPath(table *Table, a Attributes) {
+	bestPaths := make([]unique.Handle[Attributes], 0, initialBestPathsCapacity)
 	ah := unique.Make(a)
-	n.mu.Lock()
-	defer n.mu.Unlock()
 	for i, old := range n.paths {
 		if ah == old {
 			// Path is unchanged. No replacement needed.
@@ -47,38 +53,42 @@ func (n *network) AddPath(a Attributes) {
 		}
 		if old.Value().Peer == a.Peer {
 			// We previously got a path from this same peer. Replace it.
+			bestPaths = n.appendBestPaths(bestPaths)
 			n.paths[i] = ah
-			n.pathsVersion = n.version.Add(1)
-			n.sorted = false
+			n.sortPaths(table, bestPaths)
 			return
 		}
 	}
 	// First time we've seen this path. Add it.
+	bestPaths = n.appendBestPaths(bestPaths)
 	n.paths = append(n.paths, ah)
-	n.pathsVersion = n.version.Add(1)
-	n.sorted = false
+	n.sortPaths(table, bestPaths)
 }
 
-// RemovePath removes the path via the specified peer.
+// removePath removes the path via the specified peer.
 // It is safe to call even if no path from the peer is present.
-func (n *network) RemovePath(peer netip.Addr) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
+func (n *network) removePath(table *Table, peer netip.Addr) {
+	bestPaths := make([]unique.Handle[Attributes], 0, initialBestPathsCapacity)
+	var deleted bool
 	paths := slices.DeleteFunc(n.paths, func(old unique.Handle[Attributes]) bool {
-		return old.Value().Peer == peer
+		ok := old.Value().Peer == peer
+		if ok && !deleted {
+			deleted = true
+			bestPaths = n.appendBestPaths(bestPaths)
+		}
+		return ok
 	})
-	if len(paths) != len(n.paths) {
-		n.pathsVersion = n.version.Add(1)
-		n.sorted = false
+	if !deleted {
+		// No path was removed. This is fine.
+		return
 	}
+	// A path was removed.
 	n.paths = paths
+	n.sortPaths(table, bestPaths)
 }
 
 // countBestPaths counts the number of paths that are tied for best path.
 func countBestPaths(paths []unique.Handle[Attributes], cmp func(a, b *Attributes) int) int {
-	if cmp == nil {
-		cmp = Compare
-	}
 	for i := 1; i < len(paths); i++ {
 		a := paths[i-1].Value()
 		b := paths[i].Value()
@@ -89,43 +99,29 @@ func countBestPaths(paths []unique.Handle[Attributes], cmp func(a, b *Attributes
 	return len(paths)
 }
 
-// sortPaths ensures that n.paths is sorted and that
-// n.bestPaths contains the best paths.
-func (n *network) sortPaths(t *Table) {
-	cmp := t.Compare
+// sortPaths sorts n.paths. It should be passed a copy of the previous best
+// paths. If the new best paths after sorting differ from the provided ones,
+// n.numBestPaths and n.version will be updated.
+func (n *network) sortPaths(table *Table, bestPaths []unique.Handle[Attributes]) {
+	cmp := table.Compare
 	if cmp == nil {
 		cmp = Compare
 	}
 	sortAttributes(n.paths, cmp)
 	numBestPaths := countBestPaths(n.paths, cmp)
-	if numBestPaths != len(n.bestPaths) {
-		// The number of best paths has changed.
-		n.bestPaths = n.bestPaths[:0]
-		n.bestPaths = append(n.bestPaths, n.paths[:numBestPaths]...)
-		n.bestPathsVersion = n.pathsVersion
-		n.sorted = true
+	if slices.Equal(bestPaths, n.paths[:numBestPaths]) {
+		// The best paths have not changed.
 		return
 	}
-	if !slices.Equal(n.bestPaths, n.paths[:numBestPaths]) {
-		// One of the best paths has changed.
-		copy(n.bestPaths, n.paths[:numBestPaths])
-		n.bestPathsVersion = n.pathsVersion
-		n.sorted = true
-		return
-	}
-	// The best paths have not changed.
-	n.sorted = true
+	// One of the best paths has changed.
+	n.numBestPaths = numBestPaths
+	n.version = table.version.Add(1)
 }
 
 // allPaths returns a copy of all paths to the network.
-func (n *network) allPaths(t *Table) []unique.Handle[Attributes] {
-	n.mu.Lock()
-	defer n.mu.Unlock()
+func (n *network) allPaths() []unique.Handle[Attributes] {
 	if len(n.paths) == 0 {
 		return nil
-	}
-	if !n.sorted {
-		n.sortPaths(t)
 	}
 	return slices.Clone(n.paths)
 }
@@ -135,14 +131,9 @@ var (
 )
 
 // bestPath returns the best path to the network, or false if no path exists.
-func (n *network) bestPath(t *Table) (unique.Handle[Attributes], bool) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
+func (n *network) bestPath() (unique.Handle[Attributes], bool) {
 	if len(n.paths) == 0 {
 		return zeroAttributes, false
-	}
-	if !n.sorted {
-		n.sortPaths(t)
 	}
 	return n.paths[0], true
 }
@@ -152,21 +143,17 @@ func (n *network) bestPath(t *Table) (unique.Handle[Attributes], bool) {
 // skip the return in case the best paths haven't changed. It returns a boolean
 // to indicate whether a new set of routes were returned (including the empty
 // set, which indicates a withdraw).
-func (n *network) bestMultiPath(t *Table, generation int64) ([]unique.Handle[Attributes], int64, bool) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	if !n.sorted {
-		n.sortPaths(t)
+func (n *network) bestMultiPath(generation int64) ([]unique.Handle[Attributes], int64, bool) {
+	if n.version == generation {
+		return nil, n.version, false
 	}
-	if n.bestPathsVersion == generation {
-		return nil, n.bestPathsVersion, false
+	if n.numBestPaths == 0 {
+		return nil, n.version, true
 	}
-	return slices.Clone(n.bestPaths), n.bestPathsVersion, true
+	return slices.Clone(n.paths[:n.numBestPaths]), n.version, true
 }
 
 // hasPath returns whether at least one path is present.
 func (n *network) hasPath() bool {
-	n.mu.Lock()
-	defer n.mu.Unlock()
 	return len(n.paths) != 0
 }
