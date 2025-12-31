@@ -821,9 +821,7 @@ func (f *fsm) removePaths(peerAddr netip.Addr) {
 			// Skip route families not previously negotiated with the peer.
 			continue
 		}
-		for _, n := range table.allNetworks() {
-			n.RemovePath(peerAddr)
-		}
+		table.removePathsFrom(peerAddr)
 	}
 }
 

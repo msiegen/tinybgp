@@ -55,9 +55,9 @@ func TestTable(t *testing.T) {
 		}
 	}
 
-	n1.AddPath(Attributes{})
-	n2.AddPath(Attributes{})
-	n3.AddPath(Attributes{})
+	table.AddPath(p1, Attributes{})
+	table.AddPath(p2, Attributes{})
+	table.AddPath(p1, Attributes{})
 
 	for _, want := range []netip.Prefix{p1, p2} {
 		if !table.hasNetwork(want) {
@@ -66,19 +66,40 @@ func TestTable(t *testing.T) {
 	}
 
 	var networksCount int
-	for _, _ = range table.allNetworks() {
-		networksCount++
+	for _, n := range table.networks {
+		if n.hasPath() {
+			networksCount++
+		}
 	}
 	if networksCount != 2 {
 		t.Errorf("got %v networks, want 2", networksCount)
 	}
 
 	var bestRoutesCount int
-	for _, _ = range table.allNetworks() {
+	for _, _ = range table.bestRoutes() {
 		bestRoutesCount++
 	}
 	if bestRoutesCount != 2 {
-		t.Errorf("got %v networks, want 2", bestRoutesCount)
+		t.Errorf("got %v best routes, want 2", bestRoutesCount)
+	}
+}
+
+func TestTableAddRemove(t *testing.T) {
+	table := &Table{}
+
+	nlri := netip.MustParsePrefix("2001:db8:1::/48")
+	peer := netip.MustParseAddr("3fff::1")
+
+	table.AddPath(nlri, Attributes{Peer: peer})
+	table.RemovePath(nlri, peer)
+	table.AddPath(nlri, Attributes{Peer: peer})
+
+	var bestRoutesCount int
+	for _, _ = range table.bestRoutes() {
+		bestRoutesCount++
+	}
+	if bestRoutesCount != 1 {
+		t.Errorf("got %v best routes, want 1", bestRoutesCount)
 	}
 }
 
