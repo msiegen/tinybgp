@@ -23,6 +23,11 @@ import (
 	"unique"
 )
 
+// initialAllPathsCapacity is the initial capacity of the slice that holds a
+// copy of a network's paths while iterating over routes. If the number of
+// paths to a network exceeds this, iteration will result in heap allocations.
+const initialAllPathsCapacity = 64
+
 // A Table is a set of networks that each have a distinct NLRI.
 type Table struct {
 	// Compare decides which attributes represent the better route.
@@ -98,7 +103,8 @@ func (t *Table) Routes(nlri netip.Prefix) iter.Seq[Attributes] {
 			t.mu.Unlock()
 			return
 		}
-		ap := n.allPaths()
+		ap := make([]unique.Handle[Attributes], 0, initialAllPathsCapacity)
+		ap = append(ap, n.paths...)
 		t.mu.Unlock()
 		for _, attrs := range ap {
 			if !yield(attrs.Value()) {
@@ -113,7 +119,8 @@ func (t *Table) AllRoutes() iter.Seq2[netip.Prefix, Attributes] {
 	return func(yield func(netip.Prefix, Attributes) bool) {
 		t.mu.Lock()
 		for p, n := range t.networks {
-			ap := n.allPaths()
+			ap := make([]unique.Handle[Attributes], 0, initialAllPathsCapacity)
+			ap = append(ap, n.paths...)
 			t.mu.Unlock()
 			for _, attrs := range ap {
 				if !yield(p, attrs.Value()) {
