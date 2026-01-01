@@ -307,7 +307,7 @@ func (a Attributes) String() string {
 //   - Local preference (higher values first)
 //   - AS path length (shorter paths first)
 //   - MED (lower values first)
-func Compare(a, b *Attributes) int {
+func Compare(a, b Attributes) int {
 	if alp, blp := a.localPref(), b.localPref(); alp > blp {
 		return -1
 	} else if alp < blp {
@@ -329,10 +329,8 @@ func Compare(a, b *Attributes) int {
 }
 
 // sortAttributes sorts a slice of attributes to place the best routes first.
-func sortAttributes(as []unique.Handle[Attributes], cmp func(a, b *Attributes) int) {
+func sortAttributes(as []unique.Handle[Attributes], cmp func(a, b Attributes) int) {
 	slices.SortStableFunc(as, func(a, b unique.Handle[Attributes]) int {
-		av := a.Value()
-		bv := b.Value()
-		return cmp(&av, &bv)
+		return cmp(a.Value(), b.Value())
 	})
 }
