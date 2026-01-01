@@ -75,11 +75,11 @@ func (n *network) removePath(table *Table, peer netip.Addr) {
 }
 
 // countBestPaths counts the number of paths that are tied for best path.
-func countBestPaths(paths []unique.Handle[Attributes], cmp func(a, b *Attributes) int) int {
+func countBestPaths(paths []unique.Handle[Attributes], cmp func(a, b Attributes) int) int {
 	for i := 1; i < len(paths); i++ {
 		a := paths[i-1].Value()
 		b := paths[i].Value()
-		if cmp(&a, &b) != 0 {
+		if cmp(a, b) != 0 {
 			return i
 		}
 	}

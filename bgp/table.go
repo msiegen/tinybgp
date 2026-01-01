@@ -32,7 +32,7 @@ const initialAllPathsCapacity = 64
 type Table struct {
 	// Compare decides which attributes represent the better route.
 	// If nil, the package level Compare function is used.
-	Compare func(a, b *Attributes) int
+	Compare func(a, b Attributes) int
 
 	version  atomic.Int64
 	mu       sync.Mutex
