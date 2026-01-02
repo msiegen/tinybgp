@@ -466,16 +466,17 @@ func (f *fsm) sendUpdate(c net.Conn, network netip.Prefix, attrs Attributes) err
 	if err != nil {
 		return err
 	}
-	if !attrs.Nexthop.IsValid() {
+	nexthop := attrs.Nexthop()
+	if !nexthop.IsValid() {
 		return fmt.Errorf("invalid nexthop for prefix %v", network)
 	}
 	a := make([]bgp.PathAttributeInterface, 0, 4)
 	var nlri []*bgp.IPAddrPrefix
-	if network.Addr().Is4() && attrs.Nexthop.Is4() {
+	if network.Addr().Is4() && nexthop.Is4() {
 		// For IPv4 routed via an IPv4 nexthop, use the the NLRI field in the UPDATE
 		// message and populate the mandatory NEXT_HOP attribute as required by
 		// https://datatracker.ietf.org/doc/html/rfc4271.
-		a = append(a, bgp.NewPathAttributeNextHop(attrs.Nexthop.String()))
+		a = append(a, bgp.NewPathAttributeNextHop(nexthop.String()))
 		nlri = []*bgp.IPAddrPrefix{
 			bgp.NewIPAddrPrefix(uint8(network.Bits()), network.Addr().String()),
 		}
@@ -484,14 +485,14 @@ func (f *fsm) sendUpdate(c net.Conn, network netip.Prefix, attrs Attributes) err
 		// attribute as required by https://datatracker.ietf.org/doc/html/rfc4760.
 		// According to https://datatracker.ietf.org/doc/html/rfc7606#section-5.1
 		// this should be the first attribute.
-		a = append(a, bgp.NewPathAttributeMpReachNLRI(attrs.Nexthop.String(), []bgp.AddrPrefixInterface{ap}))
+		a = append(a, bgp.NewPathAttributeMpReachNLRI(nexthop.String(), []bgp.AddrPrefixInterface{ap}))
 	}
 	a = append(a,
 		bgp.NewPathAttributeOrigin(bgp.BGP_ORIGIN_ATTR_TYPE_INCOMPLETE),
 		bgp.NewPathAttributeAsPath([]bgp.AsPathParamInterface{asp}),
 	)
-	if attrs.HasMED {
-		a = append(a, bgp.NewPathAttributeMultiExitDisc(attrs.MED))
+	if med, ok := attrs.MED(); ok {
+		a = append(a, bgp.NewPathAttributeMultiExitDisc(med))
 	}
 	cm := attrs.Communities()
 	if len(cm) != 0 {
@@ -544,7 +545,7 @@ func (f *fsm) sendUpdates(ctx context.Context, c net.Conn, reevaluate bool) (boo
 		tracked := f.session.Tracked[rf]
 		suppressed := f.session.Suppressed[rf]
 		for nlri, attrs := range table.updatedRoutes(f.exportFilter, tracked, suppressed, &f.session.Version, reevaluate) {
-			if attrs.Nexthop.IsValid() {
+			if attrs.Nexthop().IsValid() {
 				f.session.Logger.Log(ctx, LevelUpdates, "announcing", "nlri", nlri)
 				if err := f.sendUpdate(c, nlri, attrs); err != nil {
 					return false, err
@@ -734,11 +735,11 @@ func (f *fsm) processUpdate(ctx context.Context, peerAddr netip.Addr, importFilt
 		nexthop = nexthop.WithZone(peerAddr.Zone())
 	}
 	for _, nlri := range updated {
-		attrs := Attributes{
-			Peer:    peerAddr,
-			Nexthop: nexthop,
-			MED:     med,
-			HasMED:  hasMED,
+		var attrs Attributes
+		attrs.SetPeer(peerAddr)
+		attrs.SetNexthop(nexthop)
+		if hasMED {
+			attrs.SetMED(med)
 		}
 		attrs.SetPath(asPath)
 		attrs.SetCommunities(communities)

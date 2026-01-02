@@ -33,31 +33,16 @@ const (
 // Attributes is the information associated with a route.
 // Attributes are comparable and may be used as keys in a map.
 type Attributes struct {
-	// Peer is the BGP peer from which the route was received.
-	Peer netip.Addr
-	// Nexthop is the IP neighbor where packets traversing the route should be
-	// sent. It's commonly equal to the peer address, but can differ e.g. if the
-	// peer is a route server.
-	Nexthop netip.Addr
-	// LocalPref, together with HasLocalPref, specifies a priority for the route
-	// that is considered prior to the AS path length. Higher values are more
-	// preferred. The local preference is used in best path computations and may
-	// be set by an import filter, but is not imported from or exported to peers
-	// (eBGP semantics).
-	LocalPref uint32
-	// HasLocalPref indicates whether LocalPref contains a valid local preference.
-	// When false, a default local preference of 100 is assumed.
-	HasLocalPref bool
-	// MED, the multi exit discriminator, together with HasMED, specifies a
-	// priority that is used to break a tie between two routes with the same AS
-	// path length and same first AS in the path. Lower values are more preferred.
-	// MED is imported from peers if they provide it, and cleared by the default
-	// export filter (eBGP semantics).
-	MED uint32
-	// HasMED indicates whether MED contains a valid multi exit discriminator.
-	// When false, a default value of 0 is assumed.
-	HasMED bool
-
+	// peer is the BGP peer from which the route was received.
+	peer netip.Addr
+	// nexthop is the IP neighbor where packets should be sent.
+	nexthop netip.Addr
+	// localPref and hasLocalPref specify the local preference.
+	localPref    uint32
+	hasLocalPref bool
+	// med and hasMED specify the multi exit discriminator.
+	med    uint32
+	hasMED bool
 	// path is the serialized AS path.
 	path string
 	// communities is the serialized set of communities.
@@ -66,6 +51,77 @@ type Attributes struct {
 	extendedCommunities string
 	// largeCommunities is the serialized set of large communities.
 	largeCommunities string
+}
+
+// Peer returns the BGP peer from which the route was received.
+func (a Attributes) Peer() netip.Addr {
+	return a.peer
+}
+
+// SetPeer sets the BGP peer from which the route was received.
+func (a *Attributes) SetPeer(peer netip.Addr) {
+	a.peer = peer
+}
+
+// Nexthop returns the IP neighbor where packets traversing the route should be
+// sent. It's commonly equal to the peer address, but can differ e.g. if the
+// peer is a route server.
+func (a Attributes) Nexthop() netip.Addr {
+	return a.nexthop
+}
+
+// SetNexthop sets IP neighbor where packets traversing the route should be sent.
+func (a *Attributes) SetNexthop(nh netip.Addr) {
+	a.nexthop = nh
+}
+
+// LocalPref returns the local preference, a priority for the route that is
+// considered prior to the AS path length. Higher values are more preferred.
+// If absent, a default value of 100 is returned and the boolean will be false.
+// The local preference is used in best path computations and may be set by an
+// import filter, but is not imported from or exported to peers (eBGP semantics).
+func (a Attributes) LocalPref() (uint32, bool) {
+	if a.hasLocalPref {
+		return a.localPref, true
+	}
+	return DefaultLocalPreference, false
+}
+
+// SetLocalPref sets the local preference. See the documentation for the
+// LocalPref method to see how this is used.
+func (a *Attributes) SetLocalPref(v uint32) {
+	a.localPref = v
+	a.hasLocalPref = true
+}
+
+// ClearLocalPref clears the local preference. See the documentation for the
+// LocalPref method to see how this is used.
+func (a *Attributes) ClearLocalPref() {
+	a.localPref = 0
+	a.hasLocalPref = false
+}
+
+// MED returns the multi exit discriminator, which specifies a priority that is
+// used to break a tie between two routes with the same AS path length and same
+// first AS in the path. Lower values are more preferred. The default is zero.
+// MED is imported from peers if they provide it, and cleared by the default
+// export filter (eBGP semantics).
+func (a Attributes) MED() (uint32, bool) {
+	return a.med, a.hasMED
+}
+
+// SetMED sets the multi exit discriminator. See the documentation for the
+// MED method to see how this is used.
+func (a *Attributes) SetMED(v uint32) {
+	a.med = v
+	a.hasMED = true
+}
+
+// ClearMED clears the multi exit discriminator. See the documentation for the
+// MED method to see how this is used.
+func (a *Attributes) ClearMED() {
+	a.med = 0
+	a.hasMED = false
 }
 
 func deserializePath(s string) []uint32 {
@@ -82,7 +138,7 @@ func deserializePath(s string) []uint32 {
 
 // Path returns AS path. The first element is the nexthop
 // and the last element is the route's origin.
-func (a *Attributes) Path() []uint32 {
+func (a Attributes) Path() []uint32 {
 	return deserializePath(a.path)
 }
 
@@ -109,7 +165,7 @@ func (a *Attributes) PathLen() int {
 }
 
 // PathContains checks whether an AS is present in the path.
-func (a *Attributes) PathContains(asn uint32) bool {
+func (a Attributes) PathContains(asn uint32) bool {
 	for i := 0; i < len(a.path)/4; i++ {
 		if asn == deserializePath(a.path[4*i : 4*i+4])[0] {
 			return true
@@ -119,7 +175,7 @@ func (a *Attributes) PathContains(asn uint32) bool {
 }
 
 // First returns the first AS in the path (corresponding to the nexthop).
-func (a *Attributes) First() uint32 {
+func (a Attributes) First() uint32 {
 	if len(a.path) == 0 {
 		return 0
 	}
@@ -127,7 +183,7 @@ func (a *Attributes) First() uint32 {
 }
 
 // Origin returns the ASN originating the route.
-func (a *Attributes) Origin() uint32 {
+func (a Attributes) Origin() uint32 {
 	if len(a.path) == 0 {
 		return 0
 	}
@@ -153,7 +209,7 @@ func deserializeCommunities(s string) map[Community]bool {
 
 // Communities returns the BGP communities as defined by
 // https://datatracker.ietf.org/doc/html/rfc1997.
-func (a *Attributes) Communities() map[Community]bool {
+func (a Attributes) Communities() map[Community]bool {
 	return deserializeCommunities(a.communities)
 }
 
@@ -196,7 +252,7 @@ func deserializeExtendedCommunities(s string) map[ExtendedCommunity]bool {
 // https://datatracker.ietf.org/doc/html/rfc4360.
 //
 // NOTE: This is experimental. See the ExtendedCommunity type for details.
-func (a *Attributes) ExtendedCommunities() map[ExtendedCommunity]bool {
+func (a Attributes) ExtendedCommunities() map[ExtendedCommunity]bool {
 	return deserializeExtendedCommunities(a.extendedCommunities)
 }
 
@@ -243,7 +299,7 @@ func deserializeLargeCommunities(s string) map[LargeCommunity]bool {
 
 // LargeCommunities returns the BGP large communities as defined by
 // https://datatracker.ietf.org/doc/html/rfc8092
-func (a *Attributes) LargeCommunities() map[LargeCommunity]bool {
+func (a Attributes) LargeCommunities() map[LargeCommunity]bool {
 	return deserializeLargeCommunities(a.largeCommunities)
 }
 
@@ -272,28 +328,11 @@ func (a *Attributes) SetLargeCommunities(cs map[LargeCommunity]bool) {
 	a.largeCommunities = serializeLargeCommunities(cs)
 }
 
-// localPref returns the effective value of the local preference,
-// which may be the default value if no local preference is specified.
-func (a *Attributes) localPref() uint32 {
-	if a.HasLocalPref {
-		return a.LocalPref
-	}
-	return DefaultLocalPreference
-}
-
-// med returns the effective value of the multi exit discriminator.
-func (a *Attributes) med() uint32 {
-	if a.HasMED {
-		return a.MED
-	}
-	return 0
-}
-
 // String returns a human readable representation of a few key attributes.
 func (a Attributes) String() string {
 	var parts []string
-	if a.Nexthop.IsValid() {
-		parts = append(parts, "nexthop="+a.Nexthop.String())
+	if nh := a.Nexthop(); nh.IsValid() {
+		parts = append(parts, "nexthop="+nh.String())
 	}
 	if a.path != "" {
 		parts = append(parts, fmt.Sprintf("path=%v", a.Path()))
@@ -308,7 +347,9 @@ func (a Attributes) String() string {
 //   - AS path length (shorter paths first)
 //   - MED (lower values first)
 func Compare(a, b Attributes) int {
-	if alp, blp := a.localPref(), b.localPref(); alp > blp {
+	alp, _ := a.LocalPref()
+	blp, _ := b.LocalPref()
+	if alp > blp {
 		return -1
 	} else if alp < blp {
 		return 1
@@ -318,8 +359,10 @@ func Compare(a, b Attributes) int {
 	} else if apl > bpl {
 		return 1
 	}
-	if (a.HasMED || b.HasMED) && (a.First() == b.First()) {
-		if am, bm := a.med(), b.med(); am < bm {
+	am, aHasMED := a.MED()
+	bm, bHasMED := b.MED()
+	if (aHasMED || bHasMED) && (a.First() == b.First()) {
+		if am < bm {
 			return -1
 		} else if am > bm {
 			return 1
