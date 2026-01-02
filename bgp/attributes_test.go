@@ -249,7 +249,7 @@ func TestSortAttributes(t *testing.T) {
 		{a3, a2, a1},
 	} {
 		t.Run(fmt.Sprintf("%v", i), func(t *testing.T) {
-			var as []unique.Handle[Attributes]
+			var as []attrHandle
 			for _, a := range tc {
 				as = append(as, unique.Make(a))
 			}
