@@ -15,9 +15,13 @@
 package bgp
 
 import (
+	"net"
 	"net/netip"
+	"reflect"
+	"slices"
 	"testing"
 	"time"
+	"unique"
 )
 
 func TestTable(t *testing.T) {
@@ -100,6 +104,189 @@ func TestTableAddRemove(t *testing.T) {
 	}
 	if bestRoutesCount != 1 {
 		t.Errorf("got %v best routes, want 1", bestRoutesCount)
+	}
+}
+
+func TestUpdatedRoutes(t *testing.T) {
+	table := &Table{}
+	peer1 := netip.MustParseAddr("3fff::1")
+	peer2 := netip.MustParseAddr("3fff::2")
+	a1 := Attributes{Peer: peer1}
+	a2 := Attributes{Peer: peer2}
+	prefix := func(i int) netip.Prefix {
+		ip := net.ParseIP("2001:db8::")
+		ip[12] = byte(i >> 24 & 0xf)
+		ip[13] = byte(i >> 16 & 0xf)
+		ip[14] = byte(i >> 8 & 0xf)
+		ip[15] = byte(i & 0xf)
+		addr, _ := netip.AddrFromSlice(ip)
+		return netip.PrefixFrom(addr, 128)
+	}
+
+	exportFilter := func(nlri netip.Prefix, attrs *Attributes) error {
+		if attrs.MED == 999 {
+			return ErrDiscard
+		}
+		return nil
+	}
+
+	tracked := map[netip.Prefix]unique.Handle[Attributes]{}
+	suppressed := map[netip.Prefix]struct{}{}
+	var version int64
+
+	comparePrefixes := func(a, b netip.Prefix) int {
+		return a.Addr().Compare(b.Addr())
+	}
+	collect := func() ([]netip.Prefix, []netip.Prefix) {
+		var announce []netip.Prefix
+		var withdraw []netip.Prefix
+		for nlri, attrs := range table.updatedRoutes(exportFilter, tracked, suppressed, &version, false) {
+			var zero Attributes
+			if attrs == zero {
+				withdraw = append(withdraw, nlri)
+				continue
+			}
+			announce = append(announce, nlri)
+		}
+		slices.SortFunc(announce, comparePrefixes)
+		slices.SortFunc(withdraw, comparePrefixes)
+		return announce, withdraw
+	}
+
+	// Announce two routes.
+	table.AddPath(prefix(0), a1)
+	table.AddPath(prefix(1), a2)
+	wantAnnounce := []netip.Prefix{prefix(0), prefix(1)}
+	var wantWithdraw []netip.Prefix
+	gotAnnounce, gotWithdraw := collect()
+	if !reflect.DeepEqual(gotAnnounce, wantAnnounce) {
+		t.Errorf("got announce %v, want %v", gotAnnounce, wantAnnounce)
+	}
+	if !reflect.DeepEqual(gotWithdraw, wantWithdraw) {
+		t.Errorf("got withdraw %v, want %v", gotWithdraw, wantWithdraw)
+	}
+
+	// Do not yield the same routes again.
+	wantAnnounce = nil
+	wantWithdraw = nil
+	gotAnnounce, gotWithdraw = collect()
+	if !reflect.DeepEqual(gotAnnounce, wantAnnounce) {
+		t.Errorf("got announce %v, want %v", gotAnnounce, wantAnnounce)
+	}
+	if !reflect.DeepEqual(gotWithdraw, wantWithdraw) {
+		t.Errorf("got withdraw %v, want %v", gotWithdraw, wantWithdraw)
+	}
+
+	// Announce a new route.
+	table.AddPath(prefix(2), a1)
+	wantAnnounce = []netip.Prefix{prefix(2)}
+	wantWithdraw = nil
+	gotAnnounce, gotWithdraw = collect()
+	if !reflect.DeepEqual(gotAnnounce, wantAnnounce) {
+		t.Errorf("got announce %v, want %v", gotAnnounce, wantAnnounce)
+	}
+	if !reflect.DeepEqual(gotWithdraw, wantWithdraw) {
+		t.Errorf("got withdraw %v, want %v", gotWithdraw, wantWithdraw)
+	}
+
+	// Update an existing route.
+	a1m := a1
+	a1m.MED = 10 // arbitrary modification
+	table.AddPath(prefix(0), a1m)
+	wantAnnounce = []netip.Prefix{prefix(0)}
+	wantWithdraw = nil
+	gotAnnounce, gotWithdraw = collect()
+	if !reflect.DeepEqual(gotAnnounce, wantAnnounce) {
+		t.Errorf("got announce %v, want %v", gotAnnounce, wantAnnounce)
+	}
+	if !reflect.DeepEqual(gotWithdraw, wantWithdraw) {
+		t.Errorf("got withdraw %v, want %v", gotWithdraw, wantWithdraw)
+	}
+
+	// Withdraw a route.
+	table.RemovePath(prefix(0), peer1)
+	wantAnnounce = nil
+	wantWithdraw = []netip.Prefix{prefix(0)}
+	gotAnnounce, gotWithdraw = collect()
+	if !reflect.DeepEqual(gotAnnounce, wantAnnounce) {
+		t.Errorf("got announce %v, want %v", gotAnnounce, wantAnnounce)
+	}
+	if !reflect.DeepEqual(gotWithdraw, wantWithdraw) {
+		t.Errorf("got withdraw %v, want %v", gotWithdraw, wantWithdraw)
+	}
+
+	// Withdraw everything from a particular peer.
+	table.removePathsFrom(peer2)
+	wantAnnounce = nil
+	wantWithdraw = []netip.Prefix{prefix(1)}
+	gotAnnounce, gotWithdraw = collect()
+	if !reflect.DeepEqual(gotAnnounce, wantAnnounce) {
+		t.Errorf("got announce %v, want %v", gotAnnounce, wantAnnounce)
+	}
+	if !reflect.DeepEqual(gotWithdraw, wantWithdraw) {
+		t.Errorf("got withdraw %v, want %v", gotWithdraw, wantWithdraw)
+	}
+
+	// Announce one route, withdraw another, and then immeidately overrun
+	// the edits buffer with a bunch of transient updates.
+	table.AddPath(prefix(3), a1)
+	table.RemovePath(prefix(2), peer1)
+	for i := 0; i < editsBufferSize+10; i++ {
+		table.AddPath(prefix(i+65536), a1)
+	}
+	for i := 0; i < editsBufferSize+10; i++ {
+		table.RemovePath(prefix(i+65536), peer1)
+	}
+	wantAnnounce = []netip.Prefix{prefix(3)}
+	wantWithdraw = []netip.Prefix{prefix(2)}
+	gotAnnounce, gotWithdraw = collect()
+	if !reflect.DeepEqual(gotAnnounce, wantAnnounce) {
+		t.Errorf("got announce %v, want %v", gotAnnounce, wantAnnounce)
+	}
+	if !reflect.DeepEqual(gotWithdraw, wantWithdraw) {
+		t.Errorf("got withdraw %v, want %v", gotWithdraw, wantWithdraw)
+	}
+
+	// Update the same route twice.
+	a1m = a1
+	a1m.MED = 20 // arbitrary modification
+	table.AddPath(prefix(3), a1m)
+	a1m.MED = 30 // arbitrary modification
+	table.AddPath(prefix(3), a1m)
+	wantAnnounce = []netip.Prefix{prefix(3)}
+	wantWithdraw = nil
+	gotAnnounce, gotWithdraw = collect()
+	if !reflect.DeepEqual(gotAnnounce, wantAnnounce) {
+		t.Errorf("got announce %v, want %v", gotAnnounce, wantAnnounce)
+	}
+	if !reflect.DeepEqual(gotWithdraw, wantWithdraw) {
+		t.Errorf("got withdraw %v, want %v", gotWithdraw, wantWithdraw)
+	}
+
+	// Update a route in a way that gets rejected by the export filter.
+	a1m.MED = 999 // not allowed to be exporter
+	table.AddPath(prefix(3), a1m)
+	wantAnnounce = nil
+	wantWithdraw = []netip.Prefix{prefix(3)}
+	gotAnnounce, gotWithdraw = collect()
+	if !reflect.DeepEqual(gotAnnounce, wantAnnounce) {
+		t.Errorf("got announce %v, want %v", gotAnnounce, wantAnnounce)
+	}
+	if !reflect.DeepEqual(gotWithdraw, wantWithdraw) {
+		t.Errorf("got withdraw %v, want %v", gotWithdraw, wantWithdraw)
+	}
+
+	// Revert the previous update to allow export again.
+	a1m.MED = 0 // allowed to be exported
+	table.AddPath(prefix(3), a1m)
+	wantAnnounce = []netip.Prefix{prefix(3)}
+	wantWithdraw = nil
+	gotAnnounce, gotWithdraw = collect()
+	if !reflect.DeepEqual(gotAnnounce, wantAnnounce) {
+		t.Errorf("got announce %v, want %v", gotAnnounce, wantAnnounce)
+	}
+	if !reflect.DeepEqual(gotWithdraw, wantWithdraw) {
+		t.Errorf("got withdraw %v, want %v", gotWithdraw, wantWithdraw)
 	}
 }
 
