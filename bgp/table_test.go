@@ -94,9 +94,9 @@ func TestTableAddRemove(t *testing.T) {
 	nlri := netip.MustParsePrefix("2001:db8:1::/48")
 	peer := netip.MustParseAddr("3fff::1")
 
-	table.AddPath(nlri, Attributes{Peer: peer})
+	table.AddPath(nlri, Attributes{peer: peer})
 	table.RemovePath(nlri, peer)
-	table.AddPath(nlri, Attributes{Peer: peer})
+	table.AddPath(nlri, Attributes{peer: peer})
 
 	var bestRoutesCount int
 	for _, _ = range table.bestRoutes() {
@@ -111,8 +111,8 @@ func TestUpdatedRoutes(t *testing.T) {
 	table := &Table{}
 	peer1 := netip.MustParseAddr("3fff::1")
 	peer2 := netip.MustParseAddr("3fff::2")
-	a1 := Attributes{Peer: peer1}
-	a2 := Attributes{Peer: peer2}
+	a1 := Attributes{peer: peer1}
+	a2 := Attributes{peer: peer2}
 	prefix := func(i int) netip.Prefix {
 		ip := net.ParseIP("2001:db8::")
 		ip[12] = byte(i >> 24 & 0xf)
@@ -124,7 +124,7 @@ func TestUpdatedRoutes(t *testing.T) {
 	}
 
 	exportFilter := func(nlri netip.Prefix, attrs *Attributes) error {
-		if attrs.MED == 999 {
+		if attrs.med == 999 {
 			return ErrDiscard
 		}
 		return nil
@@ -191,7 +191,7 @@ func TestUpdatedRoutes(t *testing.T) {
 
 	// Update an existing route.
 	a1m := a1
-	a1m.MED = 10 // arbitrary modification
+	a1m.SetMED(10) // arbitrary modification
 	table.AddPath(prefix(0), a1m)
 	wantAnnounce = []netip.Prefix{prefix(0)}
 	wantWithdraw = nil
@@ -249,9 +249,9 @@ func TestUpdatedRoutes(t *testing.T) {
 
 	// Update the same route twice.
 	a1m = a1
-	a1m.MED = 20 // arbitrary modification
+	a1m.SetMED(20) // arbitrary modification
 	table.AddPath(prefix(3), a1m)
-	a1m.MED = 30 // arbitrary modification
+	a1m.SetMED(30) // arbitrary modification
 	table.AddPath(prefix(3), a1m)
 	wantAnnounce = []netip.Prefix{prefix(3)}
 	wantWithdraw = nil
@@ -264,7 +264,7 @@ func TestUpdatedRoutes(t *testing.T) {
 	}
 
 	// Update a route in a way that gets rejected by the export filter.
-	a1m.MED = 999 // not allowed to be exporter
+	a1m.SetMED(999) // not allowed to be exporter
 	table.AddPath(prefix(3), a1m)
 	wantAnnounce = nil
 	wantWithdraw = []netip.Prefix{prefix(3)}
@@ -277,7 +277,7 @@ func TestUpdatedRoutes(t *testing.T) {
 	}
 
 	// Revert the previous update to allow export again.
-	a1m.MED = 0 // allowed to be exported
+	a1m.ClearMED() // allowed to be exported
 	table.AddPath(prefix(3), a1m)
 	wantAnnounce = []netip.Prefix{prefix(3)}
 	wantWithdraw = nil
@@ -295,20 +295,20 @@ func TestWatchBest(t *testing.T) {
 	p1 := netip.MustParsePrefix("2001:db8:1::/48")
 	nh1 := netip.MustParseAddr("2001:db8:100::1")
 	a1 := Attributes{
-		Peer:    nh1,
-		Nexthop: nh1,
+		peer:    nh1,
+		nexthop: nh1,
 	}
 	p2 := netip.MustParsePrefix("2001:db8:2::/48")
 	nh2a := netip.MustParseAddr("2001:db8:100::2a")
 	a2a := Attributes{
-		Peer:    nh2a,
-		Nexthop: nh2a,
+		peer:    nh2a,
+		nexthop: nh2a,
 		path:    serializePath([]uint32{64512, 64513}),
 	}
 	nh2b := netip.MustParseAddr("2001:db8:100::2b")
 	a2b := Attributes{
-		Peer:    nh2b,
-		Nexthop: nh2b,
+		peer:    nh2b,
+		nexthop: nh2b,
 		path:    serializePath([]uint32{64512}),
 	}
 

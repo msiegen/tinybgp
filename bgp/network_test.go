@@ -23,14 +23,14 @@ func TestNetworkPaths(t *testing.T) {
 	n := &network{}
 	p1 := netip.MustParseAddr("2001:db8::1")
 	a1 := Attributes{
-		Peer:    p1,
-		Nexthop: p1,
+		peer:    p1,
+		nexthop: p1,
 		path:    serializePath([]uint32{64512}),
 	}
 	p2 := netip.MustParseAddr("2001:db8::2")
 	a2 := Attributes{
-		Peer:    p2,
-		Nexthop: p2,
+		peer:    p2,
+		nexthop: p2,
 		path:    serializePath([]uint32{64512, 64522}),
 	}
 	if n.hasPath() {

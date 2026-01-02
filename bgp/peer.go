@@ -200,9 +200,8 @@ func (p *Peer) DefaultExportFilter(prefix netip.Prefix, attrs *Attributes) error
 		return ErrDiscard
 	}
 	attrs.Prepend(p.fsm.server.ASN)
-	attrs.Nexthop = p.fsm.session.LocalIP
-	attrs.MED = 0
-	attrs.HasMED = false
+	attrs.SetNexthop(p.fsm.session.LocalIP)
+	attrs.ClearMED()
 	return nil
 }
 

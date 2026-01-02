@@ -227,9 +227,11 @@ func TestAttributesLargeCommunities(t *testing.T) {
 }
 
 func TestSortAttributes(t *testing.T) {
-	a1 := Attributes{LocalPref: 200, HasLocalPref: true}
+	var a1 Attributes
+	a1.SetLocalPref(200)
 	a1.SetPath([]uint32{1, 2, 3, 4, 5})
-	a2 := Attributes{LocalPref: 100, HasLocalPref: true}
+	var a2 Attributes
+	a2.SetLocalPref(100)
 	a2.SetPath([]uint32{10, 20})
 	a3 := Attributes{}
 	a3.SetPath([]uint32{30, 40, 50})

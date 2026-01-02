@@ -43,7 +43,7 @@ func (n *network) addPath(table *Table, a Attributes) {
 			// Path is unchanged. No replacement needed.
 			return
 		}
-		if old.Value().Peer == a.Peer {
+		if old.Value().Peer() == a.Peer() {
 			// We previously got a path from this same peer. Replace it.
 			bestPaths = append(bestPaths, n.paths[:n.numBestPaths]...)
 			n.paths[i] = ah
@@ -63,7 +63,7 @@ func (n *network) removePath(table *Table, peer netip.Addr) {
 	bestPaths := make([]unique.Handle[Attributes], 0, initialBestPathsCapacity)
 	bestPaths = append(bestPaths, n.paths[:n.numBestPaths]...)
 	paths := slices.DeleteFunc(n.paths, func(old unique.Handle[Attributes]) bool {
-		return old.Value().Peer == peer
+		return old.Value().Peer() == peer
 	})
 	if len(paths) == len(n.paths) {
 		// No path was removed. This is fine.

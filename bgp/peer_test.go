@@ -151,7 +151,7 @@ func TestDefaultExportFilter(t *testing.T) {
 			Want: func() Attributes {
 				var a Attributes
 				a.SetPath([]uint32{65544, 65541, 65542, 65543})
-				a.Nexthop = netip.MustParseAddr("2001:db8::1")
+				a.SetNexthop(netip.MustParseAddr("2001:db8::1"))
 				return a
 			}(),
 		},
@@ -159,13 +159,13 @@ func TestDefaultExportFilter(t *testing.T) {
 			Name: "clear_med",
 			Peer: &Peer{fsm: fsm},
 			Attrs: Attributes{
-				MED:    42,
-				HasMED: true,
+				med:    42,
+				hasMED: true,
 			},
 			Want: func() Attributes {
 				var a Attributes
 				a.SetPath([]uint32{65544})
-				a.Nexthop = netip.MustParseAddr("2001:db8::1")
+				a.SetNexthop(netip.MustParseAddr("2001:db8::1"))
 				return a
 			}(),
 		},
