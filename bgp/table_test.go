@@ -21,7 +21,6 @@ import (
 	"slices"
 	"testing"
 	"time"
-	"unique"
 )
 
 func TestTable(t *testing.T) {
@@ -130,7 +129,7 @@ func TestUpdatedRoutes(t *testing.T) {
 		return nil
 	}
 
-	tracked := map[netip.Prefix]unique.Handle[Attributes]{}
+	tracked := map[netip.Prefix]attrHandle{}
 	suppressed := map[netip.Prefix]struct{}{}
 	var version int64
 

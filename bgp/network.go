@@ -28,7 +28,7 @@ const initialBestPathsCapacity = 16
 // A network represents a range of addresses with a common prefix that can be
 // reached by zero or more distinct paths.
 type network struct {
-	paths        []unique.Handle[Attributes]
+	paths        []attrHandle
 	version      int64
 	numBestPaths int
 }
@@ -36,7 +36,7 @@ type network struct {
 // addPath adds a path by which this network can be reached.
 // It replaces any previously added path from the same peer.
 func (n *network) addPath(table *Table, a Attributes) {
-	bestPaths := make([]unique.Handle[Attributes], 0, initialBestPathsCapacity)
+	bestPaths := make([]attrHandle, 0, initialBestPathsCapacity)
 	ah := unique.Make(a)
 	for i, old := range n.paths {
 		if ah == old {
@@ -60,9 +60,9 @@ func (n *network) addPath(table *Table, a Attributes) {
 // removePath removes the path via the specified peer.
 // It is safe to call even if no path from the peer is present.
 func (n *network) removePath(table *Table, peer netip.Addr) {
-	bestPaths := make([]unique.Handle[Attributes], 0, initialBestPathsCapacity)
+	bestPaths := make([]attrHandle, 0, initialBestPathsCapacity)
 	bestPaths = append(bestPaths, n.paths[:n.numBestPaths]...)
-	paths := slices.DeleteFunc(n.paths, func(old unique.Handle[Attributes]) bool {
+	paths := slices.DeleteFunc(n.paths, func(old attrHandle) bool {
 		return old.Value().Peer() == peer
 	})
 	if len(paths) == len(n.paths) {
@@ -75,7 +75,7 @@ func (n *network) removePath(table *Table, peer netip.Addr) {
 }
 
 // countBestPaths counts the number of paths that are tied for best path.
-func countBestPaths(paths []unique.Handle[Attributes], cmp func(a, b Attributes) int) int {
+func countBestPaths(paths []attrHandle, cmp func(a, b Attributes) int) int {
 	for i := 1; i < len(paths); i++ {
 		a := paths[i-1].Value()
 		b := paths[i].Value()
@@ -89,7 +89,7 @@ func countBestPaths(paths []unique.Handle[Attributes], cmp func(a, b Attributes)
 // sortPaths sorts n.paths. It should be passed a copy of the previous best
 // paths. If the new best paths after sorting differ from the provided ones,
 // n.numBestPaths and n.version will be updated.
-func (n *network) sortPaths(table *Table, bestPaths []unique.Handle[Attributes]) {
+func (n *network) sortPaths(table *Table, bestPaths []attrHandle) {
 	cmp := table.Compare
 	if cmp == nil {
 		cmp = Compare
@@ -110,7 +110,7 @@ var (
 )
 
 // bestPath returns the best path to the network, or false if no path exists.
-func (n *network) bestPath() (unique.Handle[Attributes], bool) {
+func (n *network) bestPath() (attrHandle, bool) {
 	if len(n.paths) == 0 {
 		return zeroAttributes, false
 	}
@@ -122,7 +122,7 @@ func (n *network) bestPath() (unique.Handle[Attributes], bool) {
 // skip the return in case the best paths haven't changed. It returns a boolean
 // to indicate whether a new set of routes were returned (including the empty
 // set, which indicates a withdraw).
-func (n *network) bestMultiPath(generation int64) ([]unique.Handle[Attributes], int64, bool) {
+func (n *network) bestMultiPath(generation int64) ([]attrHandle, int64, bool) {
 	if n.version == generation {
 		return nil, n.version, false
 	}

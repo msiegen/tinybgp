@@ -30,6 +30,9 @@ const (
 	DefaultLocalPreference uint32 = 100
 )
 
+// attrHandle represents a canonicalized Attributes value.
+type attrHandle = unique.Handle[Attributes]
+
 // Attributes is the information associated with a route.
 // Attributes are comparable and may be used as keys in a map.
 type Attributes struct {
@@ -372,8 +375,8 @@ func Compare(a, b Attributes) int {
 }
 
 // sortAttributes sorts a slice of attributes to place the best routes first.
-func sortAttributes(as []unique.Handle[Attributes], cmp func(a, b Attributes) int) {
-	slices.SortStableFunc(as, func(a, b unique.Handle[Attributes]) int {
+func sortAttributes(as []attrHandle, cmp func(a, b Attributes) int) {
+	slices.SortStableFunc(as, func(a, b attrHandle) int {
 		return cmp(a.Value(), b.Value())
 	})
 }
