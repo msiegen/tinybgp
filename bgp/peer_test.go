@@ -100,8 +100,7 @@ func TestDefaultImportFilter(t *testing.T) {
 	} {
 		t.Run(tc.Name, func(t *testing.T) {
 			nlri := netip.MustParsePrefix("2001:db8::/48")
-			got := tc.Attrs
-			err := tc.Peer.DefaultImportFilter(nlri, &got)
+			got, err := tc.Peer.DefaultImportFilter(nlri, tc.Attrs)
 			if !errors.Is(err, tc.WantErr) {
 				t.Fatalf("got error %v, want error %v", err, tc.WantErr)
 			}
@@ -172,8 +171,7 @@ func TestDefaultExportFilter(t *testing.T) {
 	} {
 		t.Run(tc.Name, func(t *testing.T) {
 			nlri := netip.MustParsePrefix("2001:db8::/48")
-			got := tc.Attrs
-			err := tc.Peer.DefaultExportFilter(nlri, &got)
+			got, err := tc.Peer.DefaultExportFilter(nlri, tc.Attrs)
 			if !errors.Is(err, tc.WantErr) {
 				t.Fatalf("got error %v, want error %v", err, tc.WantErr)
 			}

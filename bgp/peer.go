@@ -30,17 +30,18 @@ var (
 	noExportCommunity = NewCommunity(uint32(bgp.COMMUNITY_NO_EXPORT))
 )
 
-// A Filter is a function that runs upon import or export of a route.
+// A Filter is a function that runs on import or export of a route.
 //
-// Filters may modify the attributes. This is commonly done on export to change
-// the nexthop to the local host.
+// If a filter returns success, it must also return a valid Attributes,
+// possibly modifying the provided one. An example modification is an
+// export filter changing the nexthop to the local host.
 //
-// A filter may return ErrDiscard to terminate the evaluation of the filter
-// chain and prevent the path from being imported or exported.
-type Filter func(nlri netip.Prefix, attrs *Attributes) error
+// A filter may return ErrDiscard to terminate the evaluation of the
+// filter chain and prevent the path from being imported or exported.
+type Filter func(nlri netip.Prefix, attrs Attributes) (Attributes, error)
 
-// ErrDiscard is returned by filters that have made an explicit decision to
-// discard a path.
+// ErrDiscard is returned by filters that have made an explicit decision
+// to discard a path.
 var ErrDiscard = errors.New("discard")
 
 // A Peer is a BGP neighbor.
@@ -50,8 +51,8 @@ type Peer struct {
 	// Port is the port on which the peer listens.
 	// If not set, port 179 is assumed.
 	Port int
-	// Passive inhibits dialing the peer. The local server will still listen for
-	// incomming connections from the peer.
+	// Passive inhibits dialing the peer. The local server will still
+	// listen for incomming connections from the peer.
 	Passive bool
 
 	// LocalAddr is the local address.
@@ -172,17 +173,17 @@ func (p *Peer) stop() {
 // It discards routes if the AS path:
 //   - Contains the local ASN
 //   - Has a first AS not matching p.ASN (but if p.ASN==0, accept any first AS)
-func (p *Peer) DefaultImportFilter(nlri netip.Prefix, attrs *Attributes) error {
+func (p *Peer) DefaultImportFilter(nlri netip.Prefix, attrs Attributes) (Attributes, error) {
 	if p.ASN != 0 && p.ASN != attrs.First() {
-		return ErrDiscard
+		return Attributes{}, ErrDiscard
 	}
 	if attrs.PathContains(p.fsm.server.ASN) {
-		return ErrDiscard
+		return Attributes{}, ErrDiscard
 	}
-	return nil
+	return attrs, nil
 }
 
-func (p *Peer) importFilter(nlri netip.Prefix, attrs *Attributes) error {
+func (p *Peer) importFilter(nlri netip.Prefix, attrs Attributes) (Attributes, error) {
 	if p.ImportFilter != nil {
 		return p.ImportFilter(nlri, attrs)
 	}
@@ -195,17 +196,17 @@ func (p *Peer) importFilter(nlri netip.Prefix, attrs *Attributes) error {
 //   - Prepend the local ASN to the AS path
 //   - Change the nexthop to the local IP of the peering session
 //   - Clear the MED (multi exit discriminator)
-func (p *Peer) DefaultExportFilter(prefix netip.Prefix, attrs *Attributes) error {
+func (p *Peer) DefaultExportFilter(prefix netip.Prefix, attrs Attributes) (Attributes, error) {
 	if attrs.Communities()[noExportCommunity] {
-		return ErrDiscard
+		return Attributes{}, ErrDiscard
 	}
 	attrs.Prepend(p.fsm.server.ASN)
 	attrs.SetNexthop(p.fsm.session.LocalIP)
 	attrs.ClearMED()
-	return nil
+	return attrs, nil
 }
 
-func (p *Peer) exportFilter(nlri netip.Prefix, attrs *Attributes) error {
+func (p *Peer) exportFilter(nlri netip.Prefix, attrs Attributes) (Attributes, error) {
 	if p.ExportFilter != nil {
 		return p.ExportFilter(nlri, attrs)
 	}
