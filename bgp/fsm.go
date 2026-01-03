@@ -734,16 +734,16 @@ func (f *fsm) processUpdate(ctx context.Context, peerAddr netip.Addr, importFilt
 		nexthop = nexthop.WithZone(peerAddr.Zone())
 	}
 	for _, nlri := range updated {
-		var attrs Attributes
-		attrs.SetPeer(peerAddr)
-		attrs.SetNexthop(nexthop)
-		if hasMED {
-			attrs.SetMED(med)
-		}
-		attrs.SetPath(asPath)
-		attrs.SetCommunities(communities)
-		attrs.SetExtendedCommunities(extendedCommunities)
-		attrs.SetLargeCommunities(largeCommunities)
+		attrs := attributesBuilder{
+			Peer:                peerAddr,
+			Nexthop:             nexthop,
+			MED:                 med,
+			HasMED:              hasMED,
+			Path:                asPath,
+			Communities:         communities,
+			ExtendedCommunities: extendedCommunities,
+			LargeCommunities:    largeCommunities,
+		}.Build()
 		attrs, err := importFilter(nlri, attrs)
 		if err != nil {
 			if errors.Is(err, ErrDiscard) {

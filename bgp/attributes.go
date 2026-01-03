@@ -30,12 +30,10 @@ const (
 	DefaultLocalPreference uint32 = 100
 )
 
-// attrHandle represents a canonicalized Attributes value.
-type attrHandle = unique.Handle[Attributes]
-
-// Attributes is the information associated with a route.
-// Attributes are comparable and may be used as keys in a map.
-type Attributes struct {
+// otherAttributes holds most of the information associated with a route, but
+// not the AS path. These attributes are grouped for canonicalization because
+// there are relatively few unique combinations in a typical routing table.
+type otherAttributes struct {
 	// peer is the BGP peer from which the route was received.
 	peer netip.Addr
 	// nexthop is the IP neighbor where packets should be sent.
@@ -46,8 +44,6 @@ type Attributes struct {
 	// med and hasMED specify the multi exit discriminator.
 	med    uint32
 	hasMED bool
-	// path is the serialized AS path.
-	path string
 	// communities is the serialized set of communities.
 	communities string
 	// extendedCommunities is the serialized set of extended communities.
@@ -56,26 +52,95 @@ type Attributes struct {
 	largeCommunities string
 }
 
+// otherAttributesHandle represents a canonicalized otherAttributes value.
+type otherAttributesHandle = unique.Handle[otherAttributes]
+
+// Attributes is the information associated with a route.
+// Attributes are comparable and may be used as keys in a map.
+type Attributes struct {
+	// otherAttributes holds everything except the path.
+	otherAttributes otherAttributesHandle
+	// path is the serialized AS path.
+	path string
+}
+
+// attrHandle represents a canonicalized Attributes value.
+type attrHandle = unique.Handle[Attributes]
+
+// attributesBuilder provides a convenient way to create an Attributes.
+type attributesBuilder struct {
+	Peer                netip.Addr
+	Nexthop             netip.Addr
+	LocalPref           uint32
+	HasLocalPref        bool
+	MED                 uint32
+	HasMED              bool
+	Path                []uint32
+	Communities         map[Community]bool
+	ExtendedCommunities map[ExtendedCommunity]bool
+	LargeCommunities    map[LargeCommunity]bool
+}
+
+func (b attributesBuilder) Build() Attributes {
+	return Attributes{
+		otherAttributes: unique.Make(otherAttributes{
+			peer:                b.Peer,
+			nexthop:             b.Nexthop,
+			localPref:           b.LocalPref,
+			hasLocalPref:        b.HasLocalPref,
+			med:                 b.MED,
+			hasMED:              b.HasMED,
+			communities:         serializeCommunities(b.Communities),
+			extendedCommunities: serializeExtendedCommunities(b.ExtendedCommunities),
+			largeCommunities:    serializeLargeCommunities(b.LargeCommunities),
+		}),
+		path: serializePath(b.Path),
+	}
+}
+
 // Peer returns the BGP peer from which the route was received.
 func (a Attributes) Peer() netip.Addr {
-	return a.peer
+	if a.otherAttributes != (otherAttributesHandle{}) {
+		return a.otherAttributes.Value().peer
+	}
+	return netip.Addr{}
 }
 
 // SetPeer sets the BGP peer from which the route was received.
 func (a *Attributes) SetPeer(peer netip.Addr) {
-	a.peer = peer
+	var oa otherAttributes
+	if a.otherAttributes != (otherAttributesHandle{}) {
+		oa = a.otherAttributes.Value()
+	}
+	oa.peer = peer
+	a.otherAttributes = unique.Make(oa)
 }
 
 // Nexthop returns the IP neighbor where packets traversing the route should be
 // sent. It's commonly equal to the peer address, but can differ e.g. if the
 // peer is a route server.
 func (a Attributes) Nexthop() netip.Addr {
-	return a.nexthop
+	if a.otherAttributes != (otherAttributesHandle{}) {
+		return a.otherAttributes.Value().nexthop
+	}
+	return netip.Addr{}
 }
 
 // SetNexthop sets IP neighbor where packets traversing the route should be sent.
 func (a *Attributes) SetNexthop(nh netip.Addr) {
-	a.nexthop = nh
+	var oa otherAttributes
+	if a.otherAttributes != (otherAttributesHandle{}) {
+		oa = a.otherAttributes.Value()
+	}
+	oa.nexthop = nh
+	a.otherAttributes = unique.Make(oa)
+}
+
+func (a *Attributes) setAddresses(peer, nexthop netip.Addr) {
+	a.otherAttributes = unique.Make(otherAttributes{
+		peer:    peer,
+		nexthop: nexthop,
+	})
 }
 
 // LocalPref returns the local preference, a priority for the route that is
@@ -84,8 +149,11 @@ func (a *Attributes) SetNexthop(nh netip.Addr) {
 // The local preference is used in best path computations and may be set by an
 // import filter, but is not imported from or exported to peers (eBGP semantics).
 func (a Attributes) LocalPref() (uint32, bool) {
-	if a.hasLocalPref {
-		return a.localPref, true
+	if a.otherAttributes != (otherAttributesHandle{}) {
+		oa := a.otherAttributes.Value()
+		if oa.hasLocalPref {
+			return oa.localPref, true
+		}
 	}
 	return DefaultLocalPreference, false
 }
@@ -93,15 +161,25 @@ func (a Attributes) LocalPref() (uint32, bool) {
 // SetLocalPref sets the local preference. See the documentation for the
 // LocalPref method to see how this is used.
 func (a *Attributes) SetLocalPref(v uint32) {
-	a.localPref = v
-	a.hasLocalPref = true
+	var oa otherAttributes
+	if a.otherAttributes != (otherAttributesHandle{}) {
+		oa = a.otherAttributes.Value()
+	}
+	oa.localPref = v
+	oa.hasLocalPref = true
+	a.otherAttributes = unique.Make(oa)
 }
 
 // ClearLocalPref clears the local preference. See the documentation for the
 // LocalPref method to see how this is used.
 func (a *Attributes) ClearLocalPref() {
-	a.localPref = 0
-	a.hasLocalPref = false
+	var oa otherAttributes
+	if a.otherAttributes != (otherAttributesHandle{}) {
+		oa = a.otherAttributes.Value()
+	}
+	oa.localPref = 0
+	oa.hasLocalPref = false
+	a.otherAttributes = unique.Make(oa)
 }
 
 // MED returns the multi exit discriminator, which specifies a priority that is
@@ -110,21 +188,35 @@ func (a *Attributes) ClearLocalPref() {
 // MED is imported from peers if they provide it, and cleared by the default
 // export filter (eBGP semantics).
 func (a Attributes) MED() (uint32, bool) {
-	return a.med, a.hasMED
+	if a.otherAttributes != (otherAttributesHandle{}) {
+		oa := a.otherAttributes.Value()
+		return oa.med, oa.hasMED
+	}
+	return 0, false
 }
 
 // SetMED sets the multi exit discriminator. See the documentation for the
 // MED method to see how this is used.
 func (a *Attributes) SetMED(v uint32) {
-	a.med = v
-	a.hasMED = true
+	var oa otherAttributes
+	if a.otherAttributes != (otherAttributesHandle{}) {
+		oa = a.otherAttributes.Value()
+	}
+	oa.med = v
+	oa.hasMED = true
+	a.otherAttributes = unique.Make(oa)
 }
 
 // ClearMED clears the multi exit discriminator. See the documentation for the
 // MED method to see how this is used.
 func (a *Attributes) ClearMED() {
-	a.med = 0
-	a.hasMED = false
+	var oa otherAttributes
+	if a.otherAttributes != (otherAttributesHandle{}) {
+		oa = a.otherAttributes.Value()
+	}
+	oa.med = 0
+	oa.hasMED = false
+	a.otherAttributes = unique.Make(oa)
 }
 
 func deserializePath(s string) []uint32 {
@@ -213,7 +305,11 @@ func deserializeCommunities(s string) map[Community]bool {
 // Communities returns the BGP communities as defined by
 // https://datatracker.ietf.org/doc/html/rfc1997.
 func (a Attributes) Communities() map[Community]bool {
-	return deserializeCommunities(a.communities)
+	if a.otherAttributes != (otherAttributesHandle{}) {
+		oa := a.otherAttributes.Value()
+		return deserializeCommunities(oa.communities)
+	}
+	return nil
 }
 
 func serializeCommunities(cs map[Community]bool) string {
@@ -236,7 +332,12 @@ func serializeCommunities(cs map[Community]bool) string {
 // SetCommunities sets the BGP communities as defined by
 // https://datatracker.ietf.org/doc/html/rfc1997.
 func (a *Attributes) SetCommunities(cs map[Community]bool) {
-	a.communities = serializeCommunities(cs)
+	var oa otherAttributes
+	if a.otherAttributes != (otherAttributesHandle{}) {
+		oa = a.otherAttributes.Value()
+	}
+	oa.communities = serializeCommunities(cs)
+	a.otherAttributes = unique.Make(oa)
 }
 
 func deserializeExtendedCommunities(s string) map[ExtendedCommunity]bool {
@@ -256,7 +357,11 @@ func deserializeExtendedCommunities(s string) map[ExtendedCommunity]bool {
 //
 // NOTE: This is experimental. See the ExtendedCommunity type for details.
 func (a Attributes) ExtendedCommunities() map[ExtendedCommunity]bool {
-	return deserializeExtendedCommunities(a.extendedCommunities)
+	if a.otherAttributes != (otherAttributesHandle{}) {
+		oa := a.otherAttributes.Value()
+		return deserializeExtendedCommunities(oa.extendedCommunities)
+	}
+	return nil
 }
 
 func serializeExtendedCommunities(cs map[ExtendedCommunity]bool) string {
@@ -281,7 +386,12 @@ func serializeExtendedCommunities(cs map[ExtendedCommunity]bool) string {
 //
 // NOTE: This is experimental. See the ExtendedCommunity type for details.
 func (a *Attributes) SetExtendedCommunities(cs map[ExtendedCommunity]bool) {
-	a.extendedCommunities = serializeExtendedCommunities(cs)
+	var oa otherAttributes
+	if a.otherAttributes != (otherAttributesHandle{}) {
+		oa = a.otherAttributes.Value()
+	}
+	oa.extendedCommunities = serializeExtendedCommunities(cs)
+	a.otherAttributes = unique.Make(oa)
 }
 
 func deserializeLargeCommunities(s string) map[LargeCommunity]bool {
@@ -303,7 +413,11 @@ func deserializeLargeCommunities(s string) map[LargeCommunity]bool {
 // LargeCommunities returns the BGP large communities as defined by
 // https://datatracker.ietf.org/doc/html/rfc8092
 func (a Attributes) LargeCommunities() map[LargeCommunity]bool {
-	return deserializeLargeCommunities(a.largeCommunities)
+	if a.otherAttributes != (otherAttributesHandle{}) {
+		oa := a.otherAttributes.Value()
+		return deserializeLargeCommunities(oa.largeCommunities)
+	}
+	return nil
 }
 
 func serializeLargeCommunities(cs map[LargeCommunity]bool) string {
@@ -328,7 +442,12 @@ func serializeLargeCommunities(cs map[LargeCommunity]bool) string {
 // SetLargeCommunities sets the BGP communities as defined by
 // https://datatracker.ietf.org/doc/html/rfc8092
 func (a *Attributes) SetLargeCommunities(cs map[LargeCommunity]bool) {
-	a.largeCommunities = serializeLargeCommunities(cs)
+	var oa otherAttributes
+	if a.otherAttributes != (otherAttributesHandle{}) {
+		oa = a.otherAttributes.Value()
+	}
+	oa.largeCommunities = serializeLargeCommunities(cs)
+	a.otherAttributes = unique.Make(oa)
 }
 
 // String returns a human readable representation of a few key attributes.

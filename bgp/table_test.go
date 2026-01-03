@@ -93,9 +93,9 @@ func TestTableAddRemove(t *testing.T) {
 	nlri := netip.MustParsePrefix("2001:db8:1::/48")
 	peer := netip.MustParseAddr("3fff::1")
 
-	table.AddPath(nlri, Attributes{peer: peer})
+	table.AddPath(nlri, attributesBuilder{Peer: peer}.Build())
 	table.RemovePath(nlri, peer)
-	table.AddPath(nlri, Attributes{peer: peer})
+	table.AddPath(nlri, attributesBuilder{Peer: peer}.Build())
 
 	var bestRoutesCount int
 	for _, _ = range table.bestRoutes() {
@@ -110,8 +110,8 @@ func TestUpdatedRoutes(t *testing.T) {
 	table := &Table{}
 	peer1 := netip.MustParseAddr("3fff::1")
 	peer2 := netip.MustParseAddr("3fff::2")
-	a1 := Attributes{peer: peer1}
-	a2 := Attributes{peer: peer2}
+	a1 := attributesBuilder{Peer: peer1}.Build()
+	a2 := attributesBuilder{Peer: peer2}.Build()
 	prefix := func(i int) netip.Prefix {
 		ip := net.ParseIP("2001:db8::")
 		ip[12] = byte(i >> 24 & 0xf)
@@ -123,7 +123,8 @@ func TestUpdatedRoutes(t *testing.T) {
 	}
 
 	exportFilter := func(nlri netip.Prefix, attrs Attributes) (Attributes, error) {
-		if attrs.med == 999 {
+		med, _ := attrs.MED()
+		if med == 999 {
 			return Attributes{}, ErrDiscard
 		}
 		return attrs, nil
@@ -293,23 +294,23 @@ func TestWatchBest(t *testing.T) {
 	table := &Table{}
 	p1 := netip.MustParsePrefix("2001:db8:1::/48")
 	nh1 := netip.MustParseAddr("2001:db8:100::1")
-	a1 := Attributes{
-		peer:    nh1,
-		nexthop: nh1,
-	}
+	a1 := attributesBuilder{
+		Peer:    nh1,
+		Nexthop: nh1,
+	}.Build()
 	p2 := netip.MustParsePrefix("2001:db8:2::/48")
 	nh2a := netip.MustParseAddr("2001:db8:100::2a")
-	a2a := Attributes{
-		peer:    nh2a,
-		nexthop: nh2a,
-		path:    serializePath([]uint32{64512, 64513}),
-	}
+	a2a := attributesBuilder{
+		Peer:    nh2a,
+		Nexthop: nh2a,
+		Path:    []uint32{64512, 64513},
+	}.Build()
 	nh2b := netip.MustParseAddr("2001:db8:100::2b")
-	a2b := Attributes{
-		peer:    nh2b,
-		nexthop: nh2b,
-		path:    serializePath([]uint32{64512}),
-	}
+	a2b := attributesBuilder{
+		Peer:    nh2b,
+		Nexthop: nh2b,
+		Path:    []uint32{64512},
+	}.Build()
 
 	// Announce prefix 1
 	table.AddPath(p1, a1)

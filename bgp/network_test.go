@@ -22,17 +22,17 @@ import (
 func TestNetworkPaths(t *testing.T) {
 	n := &network{}
 	p1 := netip.MustParseAddr("2001:db8::1")
-	a1 := Attributes{
-		peer:    p1,
-		nexthop: p1,
-		path:    serializePath([]uint32{64512}),
-	}
+	a1 := attributesBuilder{
+		Peer:    p1,
+		Nexthop: p1,
+		Path:    []uint32{64512},
+	}.Build()
 	p2 := netip.MustParseAddr("2001:db8::2")
-	a2 := Attributes{
-		peer:    p2,
-		nexthop: p2,
-		path:    serializePath([]uint32{64512, 64522}),
-	}
+	a2 := attributesBuilder{
+		Peer:    p2,
+		Nexthop: p2,
+		Path:    []uint32{64512, 64522},
+	}.Build()
 	if n.hasPath() {
 		t.Errorf("hasPath returned %v, want %v", true, false)
 	}
