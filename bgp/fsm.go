@@ -735,8 +735,7 @@ func (f *fsm) processUpdate(ctx context.Context, peerAddr netip.Addr, importFilt
 	}
 	for _, nlri := range updated {
 		var attrs Attributes
-		attrs.SetPeer(peerAddr)
-		attrs.SetNexthop(nexthop)
+		attrs.setAddresses(peerAddr, nexthop)
 		if hasMED {
 			attrs.SetMED(med)
 		}

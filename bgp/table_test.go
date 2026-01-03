@@ -21,6 +21,7 @@ import (
 	"slices"
 	"testing"
 	"time"
+	"unique"
 )
 
 func TestTable(t *testing.T) {
@@ -93,9 +94,17 @@ func TestTableAddRemove(t *testing.T) {
 	nlri := netip.MustParsePrefix("2001:db8:1::/48")
 	peer := netip.MustParseAddr("3fff::1")
 
-	table.AddPath(nlri, Attributes{peer: peer})
+	table.AddPath(nlri, Attributes{
+		addresses: unique.Make(addresses{
+			peer: peer,
+		}),
+	})
 	table.RemovePath(nlri, peer)
-	table.AddPath(nlri, Attributes{peer: peer})
+	table.AddPath(nlri, Attributes{
+		addresses: unique.Make(addresses{
+			peer: peer,
+		}),
+	})
 
 	var bestRoutesCount int
 	for _, _ = range table.bestRoutes() {
@@ -110,8 +119,16 @@ func TestUpdatedRoutes(t *testing.T) {
 	table := &Table{}
 	peer1 := netip.MustParseAddr("3fff::1")
 	peer2 := netip.MustParseAddr("3fff::2")
-	a1 := Attributes{peer: peer1}
-	a2 := Attributes{peer: peer2}
+	a1 := Attributes{
+		addresses: unique.Make(addresses{
+			peer: peer1,
+		}),
+	}
+	a2 := Attributes{
+		addresses: unique.Make(addresses{
+			peer: peer2,
+		}),
+	}
 	prefix := func(i int) netip.Prefix {
 		ip := net.ParseIP("2001:db8::")
 		ip[12] = byte(i >> 24 & 0xf)
@@ -294,21 +311,27 @@ func TestWatchBest(t *testing.T) {
 	p1 := netip.MustParsePrefix("2001:db8:1::/48")
 	nh1 := netip.MustParseAddr("2001:db8:100::1")
 	a1 := Attributes{
-		peer:    nh1,
-		nexthop: nh1,
+		addresses: unique.Make(addresses{
+			peer:    nh1,
+			nexthop: nh1,
+		}),
 	}
 	p2 := netip.MustParsePrefix("2001:db8:2::/48")
 	nh2a := netip.MustParseAddr("2001:db8:100::2a")
 	a2a := Attributes{
-		peer:    nh2a,
-		nexthop: nh2a,
-		path:    serializePath([]uint32{64512, 64513}),
+		addresses: unique.Make(addresses{
+			peer:    nh2a,
+			nexthop: nh2a,
+		}),
+		path: serializePath([]uint32{64512, 64513}),
 	}
 	nh2b := netip.MustParseAddr("2001:db8:100::2b")
 	a2b := Attributes{
-		peer:    nh2b,
-		nexthop: nh2b,
-		path:    serializePath([]uint32{64512}),
+		addresses: unique.Make(addresses{
+			peer:    nh2b,
+			nexthop: nh2b,
+		}),
+		path: serializePath([]uint32{64512}),
 	}
 
 	// Announce prefix 1

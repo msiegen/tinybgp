@@ -33,13 +33,21 @@ const (
 // attrHandle represents a canonicalized Attributes value.
 type attrHandle = unique.Handle[Attributes]
 
-// Attributes is the information associated with a route.
-// Attributes are comparable and may be used as keys in a map.
-type Attributes struct {
+type addresses struct {
 	// peer is the BGP peer from which the route was received.
 	peer netip.Addr
 	// nexthop is the IP neighbor where packets should be sent.
 	nexthop netip.Addr
+}
+
+// addressesHandle represents a canonicalized addresses value.
+type addressesHandle = unique.Handle[addresses]
+
+// Attributes is the information associated with a route.
+// Attributes are comparable and may be used as keys in a map.
+type Attributes struct {
+	// addresses holds the peer and nexthop addresses.
+	addresses addressesHandle
 	// localPref and hasLocalPref specify the local preference.
 	localPref    uint32
 	hasLocalPref bool
@@ -58,24 +66,47 @@ type Attributes struct {
 
 // Peer returns the BGP peer from which the route was received.
 func (a Attributes) Peer() netip.Addr {
-	return a.peer
+	if a.addresses != (addressesHandle{}) {
+		return a.addresses.Value().peer
+	}
+	return netip.Addr{}
 }
 
 // SetPeer sets the BGP peer from which the route was received.
 func (a *Attributes) SetPeer(peer netip.Addr) {
-	a.peer = peer
+	var v addresses
+	if a.addresses != (addressesHandle{}) {
+		v = a.addresses.Value()
+	}
+	v.peer = peer
+	a.addresses = unique.Make(v)
 }
 
 // Nexthop returns the IP neighbor where packets traversing the route should be
 // sent. It's commonly equal to the peer address, but can differ e.g. if the
 // peer is a route server.
 func (a Attributes) Nexthop() netip.Addr {
-	return a.nexthop
+	if a.addresses != (addressesHandle{}) {
+		return a.addresses.Value().nexthop
+	}
+	return netip.Addr{}
 }
 
 // SetNexthop sets IP neighbor where packets traversing the route should be sent.
 func (a *Attributes) SetNexthop(nh netip.Addr) {
-	a.nexthop = nh
+	var v addresses
+	if a.addresses != (addressesHandle{}) {
+		v = a.addresses.Value()
+	}
+	v.nexthop = nh
+	a.addresses = unique.Make(v)
+}
+
+func (a *Attributes) setAddresses(peer, nexthop netip.Addr) {
+	a.addresses = unique.Make(addresses{
+		peer:    peer,
+		nexthop: nexthop,
+	})
 }
 
 // LocalPref returns the local preference, a priority for the route that is
