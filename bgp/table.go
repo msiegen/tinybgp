@@ -111,22 +111,6 @@ func (t *Table) network(nlri netip.Prefix) *network {
 	return n
 }
 
-// hasNetwork returns whether the NLRI is in the table. It's an optimization
-// for the FSM to avoid allocating a *Network when processing a withdraw for a
-// route that was never inserted due to import filters.
-func (t *Table) hasNetwork(nlri netip.Prefix) bool {
-	if t == nil {
-		return false
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	n, ok := t.networks[nlri]
-	if !ok {
-		return false
-	}
-	return n.hasPath()
-}
-
 // AddPath adds a path to the given network.
 // It replaces any previously added path from the same peer.
 func (t *Table) AddPath(nlri netip.Prefix, a Attributes) {
@@ -143,10 +127,11 @@ func (t *Table) AddPath(nlri netip.Prefix, a Attributes) {
 func (t *Table) RemovePath(nlri netip.Prefix, peer netip.Addr) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	n := t.network(nlri)
-	prior := n.version
-	n.removePath(t, peer)
-	t.edits.Mark(nlri, n.version, prior)
+	if n := t.networks[nlri]; n != nil {
+		prior := n.version
+		n.removePath(t, peer)
+		t.edits.Mark(nlri, n.version, prior)
+	}
 }
 
 // removePathsFrom removes all paths via the specified peer.
@@ -259,13 +244,11 @@ func (t *Table) updatedRoutes(export Filter, tracked map[netip.Prefix]attrHandle
 		// withdraw yields a withdrawal, if the route is no longer valid.
 		// It returns true if further iteration is still needed.
 		withdraw := func(nlri netip.Prefix) bool {
-			if !t.hasNetwork(nlri) {
-				if !yield(nlri, Attributes{}) {
-					return false
-				}
-				delete(tracked, nlri)
-				delete(suppressed, nlri)
+			if !yield(nlri, Attributes{}) {
+				return false
 			}
+			delete(tracked, nlri)
+			delete(suppressed, nlri)
 			return true
 		}
 
@@ -283,7 +266,7 @@ func (t *Table) updatedRoutes(export Filter, tracked map[netip.Prefix]attrHandle
 			for i := 0; i < n; i++ {
 				nlri := changed[i]
 				t.mu.Lock()
-				attrs, ok := t.network(nlri).bestPath()
+				attrs, ok := t.networks[nlri].bestPath()
 				t.mu.Unlock()
 				if ok {
 					// Announce new and updated routes.
@@ -316,8 +299,13 @@ func (t *Table) updatedRoutes(export Filter, tracked map[netip.Prefix]attrHandle
 		}
 		// Withdraw removed routes.
 		for nlri := range tracked {
-			if !withdraw(nlri) {
-				return
+			t.mu.Lock()
+			ok := t.networks[nlri].hasPath()
+			t.mu.Unlock()
+			if !ok {
+				if !withdraw(nlri) {
+					return
+				}
 			}
 		}
 	}
