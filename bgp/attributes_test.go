@@ -24,6 +24,67 @@ import (
 	"github.com/google/go-cmp/cmp/cmpopts"
 )
 
+func TestBuildAttributes(t *testing.T) {
+	opts := []cmp.Option{
+		cmpopts.EquateComparable(Attributes{}),
+	}
+	for _, tc := range []struct {
+		Name  string
+		Input attributesBuilder
+		Want  Attributes
+	}{
+		{
+			Name:  "zero_value",
+			Input: attributesBuilder{},
+			Want:  Attributes{},
+		},
+		{
+			Name: "all_fields",
+			Input: attributesBuilder{
+				Peer:         netip.MustParseAddr("2001:db8::1"),
+				Nexthop:      netip.MustParseAddr("2001:db8::2"),
+				LocalPref:    200,
+				HasLocalPref: true,
+				MED:          10,
+				HasMED:       true,
+				Communities: map[Community]bool{
+					NewCommunity(123): true,
+				},
+				ExtendedCommunities: map[ExtendedCommunity]bool{
+					456: true,
+				},
+				LargeCommunities: map[LargeCommunity]bool{
+					LargeCommunity{64512, 10, 20}: true,
+				},
+			},
+			Want: func() Attributes {
+				var a Attributes
+				a.SetPeer(netip.MustParseAddr("2001:db8::1"))
+				a.SetNexthop(netip.MustParseAddr("2001:db8::2"))
+				a.SetLocalPref(200)
+				a.SetMED(10)
+				a.SetCommunities(map[Community]bool{
+					NewCommunity(123): true,
+				})
+				a.SetExtendedCommunities(map[ExtendedCommunity]bool{
+					456: true,
+				})
+				a.SetLargeCommunities(map[LargeCommunity]bool{
+					LargeCommunity{64512, 10, 20}: true,
+				})
+				return a
+			}(),
+		},
+	} {
+		t.Run(tc.Name, func(t *testing.T) {
+			got := tc.Input.Build()
+			if diff := cmp.Diff(tc.Want, got, opts...); diff != "" {
+				t.Errorf("path mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
 func TestSerializeDeserializePath(t *testing.T) {
 	for _, tc := range [][]uint32{
 		{1, 2, 3},
@@ -238,8 +299,7 @@ func TestSortAttributes(t *testing.T) {
 	want := []Attributes{a1, a2, a3}
 
 	opts := []cmp.Option{
-		cmpopts.EquateComparable(netip.Addr{}),
-		cmpopts.IgnoreUnexported(Attributes{}),
+		cmpopts.EquateComparable(Attributes{}),
 	}
 	for i, tc := range [][]Attributes{
 		{a1, a3, a2},

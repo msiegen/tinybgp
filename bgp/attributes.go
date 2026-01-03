@@ -82,20 +82,21 @@ type attributesBuilder struct {
 }
 
 func (b attributesBuilder) Build() Attributes {
-	return Attributes{
-		otherAttributes: unique.Make(otherAttributes{
-			peer:                b.Peer,
-			nexthop:             b.Nexthop,
-			localPref:           b.LocalPref,
-			hasLocalPref:        b.HasLocalPref,
-			med:                 b.MED,
-			hasMED:              b.HasMED,
-			communities:         serializeCommunities(b.Communities),
-			extendedCommunities: serializeExtendedCommunities(b.ExtendedCommunities),
-			largeCommunities:    serializeLargeCommunities(b.LargeCommunities),
-		}),
+	a := Attributes{
 		path: serializePath(b.Path),
 	}
+	a.setOtherAttributes(otherAttributes{
+		peer:                b.Peer,
+		nexthop:             b.Nexthop,
+		localPref:           b.LocalPref,
+		hasLocalPref:        b.HasLocalPref,
+		med:                 b.MED,
+		hasMED:              b.HasMED,
+		communities:         serializeCommunities(b.Communities),
+		extendedCommunities: serializeExtendedCommunities(b.ExtendedCommunities),
+		largeCommunities:    serializeLargeCommunities(b.LargeCommunities),
+	})
+	return a
 }
 
 // Peer returns the BGP peer from which the route was received.
@@ -113,7 +114,7 @@ func (a *Attributes) SetPeer(peer netip.Addr) {
 		oa = a.otherAttributes.Value()
 	}
 	oa.peer = peer
-	a.otherAttributes = unique.Make(oa)
+	a.setOtherAttributes(oa)
 }
 
 // Nexthop returns the IP neighbor where packets traversing the route should be
@@ -133,14 +134,7 @@ func (a *Attributes) SetNexthop(nh netip.Addr) {
 		oa = a.otherAttributes.Value()
 	}
 	oa.nexthop = nh
-	a.otherAttributes = unique.Make(oa)
-}
-
-func (a *Attributes) setAddresses(peer, nexthop netip.Addr) {
-	a.otherAttributes = unique.Make(otherAttributes{
-		peer:    peer,
-		nexthop: nexthop,
-	})
+	a.setOtherAttributes(oa)
 }
 
 // LocalPref returns the local preference, a priority for the route that is
@@ -170,6 +164,17 @@ func (a *Attributes) SetLocalPref(v uint32) {
 	a.otherAttributes = unique.Make(oa)
 }
 
+// setOtherAttributes sets the unique handle for the other attributes. It
+// canonicalizes the all-zeroes otherAttributes as a zero otherAttributesHandle
+// to ensure Attributes with the same content compare equal.
+func (a *Attributes) setOtherAttributes(oa otherAttributes) {
+	if oa == (otherAttributes{}) {
+		a.otherAttributes = otherAttributesHandle{}
+		return
+	}
+	a.otherAttributes = unique.Make(oa)
+}
+
 // ClearLocalPref clears the local preference. See the documentation for the
 // LocalPref method to see how this is used.
 func (a *Attributes) ClearLocalPref() {
@@ -179,7 +184,7 @@ func (a *Attributes) ClearLocalPref() {
 	}
 	oa.localPref = 0
 	oa.hasLocalPref = false
-	a.otherAttributes = unique.Make(oa)
+	a.setOtherAttributes(oa)
 }
 
 // MED returns the multi exit discriminator, which specifies a priority that is
@@ -216,7 +221,7 @@ func (a *Attributes) ClearMED() {
 	}
 	oa.med = 0
 	oa.hasMED = false
-	a.otherAttributes = unique.Make(oa)
+	a.setOtherAttributes(oa)
 }
 
 func deserializePath(s string) []uint32 {
@@ -337,7 +342,7 @@ func (a *Attributes) SetCommunities(cs map[Community]bool) {
 		oa = a.otherAttributes.Value()
 	}
 	oa.communities = serializeCommunities(cs)
-	a.otherAttributes = unique.Make(oa)
+	a.setOtherAttributes(oa)
 }
 
 func deserializeExtendedCommunities(s string) map[ExtendedCommunity]bool {
@@ -391,7 +396,7 @@ func (a *Attributes) SetExtendedCommunities(cs map[ExtendedCommunity]bool) {
 		oa = a.otherAttributes.Value()
 	}
 	oa.extendedCommunities = serializeExtendedCommunities(cs)
-	a.otherAttributes = unique.Make(oa)
+	a.setOtherAttributes(oa)
 }
 
 func deserializeLargeCommunities(s string) map[LargeCommunity]bool {
@@ -447,7 +452,7 @@ func (a *Attributes) SetLargeCommunities(cs map[LargeCommunity]bool) {
 		oa = a.otherAttributes.Value()
 	}
 	oa.largeCommunities = serializeLargeCommunities(cs)
-	a.otherAttributes = unique.Make(oa)
+	a.setOtherAttributes(oa)
 }
 
 // String returns a human readable representation of a few key attributes.
