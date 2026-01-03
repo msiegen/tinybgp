@@ -53,8 +53,8 @@ func TestTable(t *testing.T) {
 	}
 
 	for _, want := range []netip.Prefix{p1, p2, p4} {
-		if table.hasNetwork(want) {
-			t.Errorf("hasNetwork(%v) returned %v, want %v", want, false, true)
+		if table.networks[want].hasPath() {
+			t.Errorf("hasPath(%v) returned %v, want %v", want, false, true)
 		}
 	}
 
@@ -63,8 +63,8 @@ func TestTable(t *testing.T) {
 	table.AddPath(p1, Attributes{})
 
 	for _, want := range []netip.Prefix{p1, p2} {
-		if !table.hasNetwork(want) {
-			t.Errorf("hasNetwork(%v) returned %v, want %v", want, true, false)
+		if !table.networks[want].hasPath() {
+			t.Errorf("hasPath(%v) returned %v, want %v", want, true, false)
 		}
 	}
 

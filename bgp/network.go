@@ -111,7 +111,7 @@ var (
 
 // bestPath returns the best path to the network, or false if no path exists.
 func (n *network) bestPath() (attrHandle, bool) {
-	if len(n.paths) == 0 {
+	if n == nil || len(n.paths) == 0 {
 		return zeroAttributes, false
 	}
 	return n.paths[0], true
@@ -134,5 +134,5 @@ func (n *network) bestMultiPath(generation int64) ([]attrHandle, int64, bool) {
 
 // hasPath returns whether at least one path is present.
 func (n *network) hasPath() bool {
-	return len(n.paths) != 0
+	return n != nil && len(n.paths) != 0
 }

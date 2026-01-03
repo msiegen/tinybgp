@@ -728,9 +728,7 @@ func (f *fsm) processUpdate(ctx context.Context, peerAddr netip.Addr, importFilt
 		return
 	}
 	for _, nlri := range withdrawn {
-		if table.hasNetwork(nlri) {
-			table.RemovePath(nlri, peerAddr)
-		}
+		table.RemovePath(nlri, peerAddr)
 	}
 	if nexthop.IsLinkLocalUnicast() {
 		nexthop = nexthop.WithZone(peerAddr.Zone())
@@ -755,9 +753,7 @@ func (f *fsm) processUpdate(ctx context.Context, peerAddr netip.Addr, importFilt
 			}
 			// If an NLRI was previously accepted but should now be filtered,
 			// remove it from the table.
-			if table.hasNetwork(nlri) {
-				table.RemovePath(nlri, peerAddr)
-			}
+			table.RemovePath(nlri, peerAddr)
 			continue
 		}
 		f.session.Logger.Log(ctx, LevelUpdates, "importing", "nlri", nlri)
