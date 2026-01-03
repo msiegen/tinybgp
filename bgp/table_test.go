@@ -122,11 +122,11 @@ func TestUpdatedRoutes(t *testing.T) {
 		return netip.PrefixFrom(addr, 128)
 	}
 
-	exportFilter := func(nlri netip.Prefix, attrs *Attributes) error {
+	exportFilter := func(nlri netip.Prefix, attrs Attributes) (Attributes, error) {
 		if attrs.med == 999 {
-			return ErrDiscard
+			return Attributes{}, ErrDiscard
 		}
-		return nil
+		return attrs, nil
 	}
 
 	tracked := map[netip.Prefix]attrHandle{}

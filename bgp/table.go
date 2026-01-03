@@ -234,8 +234,8 @@ func (t *Table) updatedRoutes(export Filter, tracked map[netip.Prefix]attrHandle
 			// We did not previously yield this route. Decide whether we should,
 			// and cache the decision for later reuse.
 			tracked[nlri] = attrs
-			attrsValue := attrs.Value()
-			if err := export(nlri, &attrsValue); err != nil {
+			attrsValue, err := export(nlri, attrs.Value())
+			if err != nil {
 				// The export filter rejected the route.
 				if isTracked {
 					if _, ok := suppressed[nlri]; !ok {
@@ -337,7 +337,7 @@ func WatchBest(t ...*Table) iter.Seq2[netip.Prefix, Attributes] {
 		suppressed[i] = map[netip.Prefix]struct{}{}
 	}
 	var version int64
-	filter := func(nlri netip.Prefix, attrs *Attributes) error { return nil }
+	filter := func(nlri netip.Prefix, attrs Attributes) (Attributes, error) { return attrs, nil }
 	return func(yield func(netip.Prefix, Attributes) bool) {
 		for {
 			for i, t := range t {

@@ -746,7 +746,8 @@ func (f *fsm) processUpdate(ctx context.Context, peerAddr netip.Addr, importFilt
 		attrs.SetCommunities(communities)
 		attrs.SetExtendedCommunities(extendedCommunities)
 		attrs.SetLargeCommunities(largeCommunities)
-		if err := importFilter(nlri, &attrs); err != nil {
+		attrs, err := importFilter(nlri, attrs)
+		if err != nil {
 			if errors.Is(err, ErrDiscard) {
 				f.session.Logger.Log(ctx, LevelUpdates, "import filter discarded", "nlri", nlri)
 			} else {
