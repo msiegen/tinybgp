@@ -75,6 +75,7 @@ func (d *collisionDetector) run(f *fsm, peer *Peer, transportAFI uint16, earlyLo
 	// structured logger are available. Use a logger with fewer fields.
 	l := earlyLogger
 
+	var buf [bgp.BGP_MAX_MESSAGE_LENGTH]byte
 	select {
 	case c := <-f.acceptC:
 		// Send OPEN message.
@@ -85,7 +86,7 @@ func (d *collisionDetector) run(f *fsm, peer *Peer, transportAFI uint16, earlyLo
 		}
 
 		// Wait for OPEN message from the peer.
-		m, err := fsmRecvMessage(c, time.Now().Add(defaultMessageTimeout))
+		m, err := fsmRecvMessage(c, buf[:], time.Now().Add(defaultMessageTimeout))
 		if err != nil {
 			maybeSendNotification(c, err) // ignore errors
 			c.Close()                     // ignore errors
@@ -125,7 +126,7 @@ func (d *collisionDetector) run(f *fsm, peer *Peer, transportAFI uint16, earlyLo
 		}
 
 		// Wait for KEEPALIVE from the peer.
-		m, err = fsmRecvMessage(c, time.Now().Add(defaultMessageTimeout))
+		m, err = fsmRecvMessage(c, buf[:], time.Now().Add(defaultMessageTimeout))
 		if err != nil {
 			maybeSendNotification(c, err) // ignore errors
 			c.Close()                     // ignore errors
