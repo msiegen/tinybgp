@@ -157,10 +157,10 @@ func TestDefaultExportFilter(t *testing.T) {
 		{
 			Name: "clear_med",
 			Peer: &Peer{fsm: fsm},
-			Attrs: Attributes{
-				med:    42,
-				hasMED: true,
-			},
+			Attrs: attributesBuilder{
+				MED:    42,
+				HasMED: true,
+			}.Build(),
 			Want: func() Attributes {
 				var a Attributes
 				a.SetPath([]uint32{65544})
