@@ -238,12 +238,14 @@ func isValidMarker(marker []byte) bool {
 	return true
 }
 
-// fsmRecvMessage reads a single BGP message from the peer.
-func fsmRecvMessage(c net.Conn, deadline time.Time) (*bgp.BGPMessage, error) {
+// fsmRecvMessage reads a single BGP message from the peer. It requires a buffer
+// of length bgp.BGP_MAX_MESSAGE_LENGTH. The buffer escapes to the heap due to
+// limitations in Go escape analysis, so the caller should allocate a reusable
+// one to minimize garbage.
+func fsmRecvMessage(c net.Conn, buf []byte, deadline time.Time) (*bgp.BGPMessage, error) {
 	if err := c.SetReadDeadline(deadline); err != nil {
 		return nil, err
 	}
-	var buf [bgp.BGP_MAX_MESSAGE_LENGTH]byte
 	if _, err := io.ReadFull(c, buf[:bgp.BGP_HEADER_LENGTH]); err != nil {
 		return nil, err
 	}
@@ -776,8 +778,9 @@ func (f *fsm) recvLoop(ctx context.Context, c net.Conn, peerAddr netip.Addr, imp
 	go func(errC chan<- error, doneC chan<- struct{}) {
 		defer close(doneC)
 		deadline := time.Now().Add(holdTime)
+		var buf [bgp.BGP_MAX_MESSAGE_LENGTH]byte
 		for {
-			msg, err := fsmRecvMessage(c, deadline)
+			msg, err := fsmRecvMessage(c, buf[:], deadline)
 			if err != nil {
 				var me *bgp.MessageError
 				if errors.As(err, &me) && !isFramingError(me) {
@@ -847,6 +850,7 @@ func (f *fsm) run(ctx context.Context, peer *Peer) {
 	var collisionDetector *collisionDetector
 	var bgpConn net.Conn
 	var holdTime time.Duration
+	var buf [bgp.BGP_MAX_MESSAGE_LENGTH]byte
 	for {
 		switch f.getState() {
 		case bgp.BGP_FSM_IDLE:
@@ -911,7 +915,7 @@ func (f *fsm) run(ctx context.Context, peer *Peer) {
 
 		case bgp.BGP_FSM_OPENSENT:
 			collisionDetector = newCollisionDetector(connecting, f, peer, transportAFI, f.session.Logger)
-			m, err := fsmRecvMessage(bgpConn, time.Now().Add(defaultMessageTimeout))
+			m, err := fsmRecvMessage(bgpConn, buf[:], time.Now().Add(defaultMessageTimeout))
 			if err != nil {
 				f.setStateError(ctx, peer, err)
 				maybeSendNotification(bgpConn, err) // ignore errors
@@ -945,7 +949,7 @@ func (f *fsm) run(ctx context.Context, peer *Peer) {
 			}
 
 		case bgp.BGP_FSM_OPENCONFIRM:
-			m, err := fsmRecvMessage(bgpConn, time.Now().Add(defaultMessageTimeout))
+			m, err := fsmRecvMessage(bgpConn, buf[:], time.Now().Add(defaultMessageTimeout))
 			if err != nil {
 				f.setStateError(ctx, peer, err)
 				maybeSendNotification(bgpConn, err) // ignore errors
