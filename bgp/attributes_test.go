@@ -143,6 +143,11 @@ func TestAttributesPath(t *testing.T) {
 		t.Errorf("got path length %v, want 4", g)
 	}
 
+	// First should be the ASN we prepended.
+	if g := attrs.First(); g != 4200000888 {
+		t.Errorf("got origin %v, want 4200000888", g)
+	}
+
 	// Origin should be the last ASN.
 	if g := attrs.Origin(); g != 64514 {
 		t.Errorf("got origin %v, want 64514", g)
