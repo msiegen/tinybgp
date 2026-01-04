@@ -296,18 +296,20 @@ func (a Attributes) PathContains(asn uint32) bool {
 
 // First returns the first AS in the path (corresponding to the nexthop).
 func (a Attributes) First() uint32 {
-	if len(a.path) == 0 {
+	if len(a.path) < 4 {
 		return 0
 	}
-	return deserializePath(a.path[:4])[0]
+	b := []byte(a.path[:4])
+	return binary.LittleEndian.Uint32(b)
 }
 
 // Origin returns the ASN originating the route.
 func (a Attributes) Origin() uint32 {
-	if len(a.path) == 0 {
+	if len(a.path) < 4 {
 		return 0
 	}
-	return deserializePath(a.path[len(a.path)-4:])[0]
+	b := []byte(a.path[len(a.path)-4:])
+	return binary.LittleEndian.Uint32(b)
 }
 
 // Prepend inserts ASNs to the beginning of the path.
