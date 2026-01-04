@@ -30,14 +30,21 @@ const (
 	DefaultLocalPreference uint32 = 100
 )
 
-// otherAttributes holds most of the information associated with a route, but
-// not the AS path. These attributes are grouped for canonicalization because
-// there are relatively few unique combinations in a typical routing table.
-type otherAttributes struct {
+// peerAttributes holds the peer and nexthop addresses. Theese are grouped for
+// canonicalization because they typically vary by peer, not by route.
+type peerAttributes struct {
 	// peer is the BGP peer from which the route was received.
 	peer netip.Addr
 	// nexthop is the IP neighbor where packets should be sent.
 	nexthop netip.Addr
+}
+
+type peerAttributesHandle = unique.Handle[peerAttributes]
+
+// otherAttributes holds most of the information associated with a route, but
+// not the AS path. These attributes are grouped for canonicalization because
+// there are relatively few unique combinations in a typical routing table.
+type otherAttributes struct {
 	// localPref and hasLocalPref specify the local preference.
 	localPref    uint32
 	hasLocalPref bool
@@ -58,10 +65,12 @@ type otherAttributesHandle = unique.Handle[otherAttributes]
 // Attributes is the information associated with a route.
 // Attributes are comparable and may be used as keys in a map.
 type Attributes struct {
-	// otherAttributes holds everything except the path.
-	otherAttributes otherAttributesHandle
+	// peerAttributes holds the peer and nexthop addresses.
+	peerAttributes peerAttributesHandle
 	// path is the serialized AS path.
 	path string
+	// otherAttributes holds everything else.
+	otherAttributes otherAttributesHandle
 }
 
 // attrHandle represents a canonicalized Attributes value.
@@ -81,13 +90,35 @@ type attributesBuilder struct {
 	LargeCommunities    map[LargeCommunity]bool
 }
 
+// setPeerAttributes sets the unique handle for the peer attributes. It
+// ensures that an all-zeroes peerAttributes compares equal to an unset one.
+func (a *Attributes) setPeerAttributes(pa peerAttributes) {
+	if pa == (peerAttributes{}) {
+		a.peerAttributes = peerAttributesHandle{}
+		return
+	}
+	a.peerAttributes = unique.Make(pa)
+}
+
+// setOtherAttributes sets the unique handle for the other attributes. It
+// ensures that an all-zeroes otherAttributes compares equal to an unset one.
+func (a *Attributes) setOtherAttributes(oa otherAttributes) {
+	if oa == (otherAttributes{}) {
+		a.otherAttributes = otherAttributesHandle{}
+		return
+	}
+	a.otherAttributes = unique.Make(oa)
+}
+
 func (b attributesBuilder) Build() Attributes {
 	a := Attributes{
 		path: serializePath(b.Path),
 	}
+	a.setPeerAttributes(peerAttributes{
+		peer:    b.Peer,
+		nexthop: b.Nexthop,
+	})
 	a.setOtherAttributes(otherAttributes{
-		peer:                b.Peer,
-		nexthop:             b.Nexthop,
 		localPref:           b.LocalPref,
 		hasLocalPref:        b.HasLocalPref,
 		med:                 b.MED,
@@ -101,40 +132,40 @@ func (b attributesBuilder) Build() Attributes {
 
 // Peer returns the BGP peer from which the route was received.
 func (a Attributes) Peer() netip.Addr {
-	if a.otherAttributes != (otherAttributesHandle{}) {
-		return a.otherAttributes.Value().peer
+	if a.peerAttributes != (peerAttributesHandle{}) {
+		return a.peerAttributes.Value().peer
 	}
 	return netip.Addr{}
 }
 
 // SetPeer sets the BGP peer from which the route was received.
 func (a *Attributes) SetPeer(peer netip.Addr) {
-	var oa otherAttributes
-	if a.otherAttributes != (otherAttributesHandle{}) {
-		oa = a.otherAttributes.Value()
+	var pa peerAttributes
+	if a.peerAttributes != (peerAttributesHandle{}) {
+		pa = a.peerAttributes.Value()
 	}
-	oa.peer = peer
-	a.setOtherAttributes(oa)
+	pa.peer = peer
+	a.setPeerAttributes(pa)
 }
 
 // Nexthop returns the IP neighbor where packets traversing the route should be
 // sent. It's commonly equal to the peer address, but can differ e.g. if the
 // peer is a route server.
 func (a Attributes) Nexthop() netip.Addr {
-	if a.otherAttributes != (otherAttributesHandle{}) {
-		return a.otherAttributes.Value().nexthop
+	if a.peerAttributes != (peerAttributesHandle{}) {
+		return a.peerAttributes.Value().nexthop
 	}
 	return netip.Addr{}
 }
 
 // SetNexthop sets IP neighbor where packets traversing the route should be sent.
 func (a *Attributes) SetNexthop(nh netip.Addr) {
-	var oa otherAttributes
-	if a.otherAttributes != (otherAttributesHandle{}) {
-		oa = a.otherAttributes.Value()
+	var pa peerAttributes
+	if a.peerAttributes != (peerAttributesHandle{}) {
+		pa = a.peerAttributes.Value()
 	}
-	oa.nexthop = nh
-	a.setOtherAttributes(oa)
+	pa.nexthop = nh
+	a.setPeerAttributes(pa)
 }
 
 // LocalPref returns the local preference, a priority for the route that is
@@ -161,18 +192,7 @@ func (a *Attributes) SetLocalPref(v uint32) {
 	}
 	oa.localPref = v
 	oa.hasLocalPref = true
-	a.otherAttributes = unique.Make(oa)
-}
-
-// setOtherAttributes sets the unique handle for the other attributes. It
-// canonicalizes the all-zeroes otherAttributes as a zero otherAttributesHandle
-// to ensure Attributes with the same content compare equal.
-func (a *Attributes) setOtherAttributes(oa otherAttributes) {
-	if oa == (otherAttributes{}) {
-		a.otherAttributes = otherAttributesHandle{}
-		return
-	}
-	a.otherAttributes = unique.Make(oa)
+	a.setOtherAttributes(oa)
 }
 
 // ClearLocalPref clears the local preference. See the documentation for the
@@ -209,7 +229,7 @@ func (a *Attributes) SetMED(v uint32) {
 	}
 	oa.med = v
 	oa.hasMED = true
-	a.otherAttributes = unique.Make(oa)
+	a.setOtherAttributes(oa)
 }
 
 // ClearMED clears the multi exit discriminator. See the documentation for the
