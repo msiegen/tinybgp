@@ -320,16 +320,17 @@ func WatchBest(t ...*Table) iter.Seq2[netip.Prefix, Attributes] {
 	}
 	tracked := make([]map[netip.Prefix]attrHandle, len(t))
 	suppressed := make([]map[netip.Prefix]struct{}, len(t))
+	versions := make([]*int64, len(t))
 	for i := 0; i < len(t); i++ {
 		tracked[i] = map[netip.Prefix]attrHandle{}
 		suppressed[i] = map[netip.Prefix]struct{}{}
+		versions[i] = new(int64)
 	}
-	var version int64
 	filter := func(nlri netip.Prefix, attrs Attributes) (Attributes, error) { return attrs, nil }
 	return func(yield func(netip.Prefix, Attributes) bool) {
 		for {
 			for i, t := range t {
-				for nlri, attrs := range t.updatedRoutes(filter, tracked[i], suppressed[i], &version, false) {
+				for nlri, attrs := range t.updatedRoutes(filter, tracked[i], suppressed[i], versions[i], false) {
 					if !yield(nlri, attrs) {
 						return
 					}

@@ -85,8 +85,8 @@ type session struct {
 	Tracked map[Family]map[netip.Prefix]attrHandle
 	// Suppressed holds the routes that were rejected by an export filter.
 	Suppressed map[Family]map[netip.Prefix]struct{}
-	// Version is the version of the routing table last sent to the peer.
-	Version int64
+	// Versions are the version of each routing table last sent to the peer.
+	Versions map[Family]*int64
 	// RecvDone is initialized when the receive loop starts and closed when the
 	// receive loop terminates. It provides a synchronization signal for session
 	// teardown to ensure that cleanup doesn't run while the receive loop might
@@ -133,9 +133,11 @@ func (s *session) setPeerHostDomain(host, domain string) {
 func (s *session) initCache() {
 	s.Tracked = map[Family]map[netip.Prefix]attrHandle{}
 	s.Suppressed = map[Family]map[netip.Prefix]struct{}{}
+	s.Versions = map[Family]*int64{}
 	for rf := range s.Families {
 		s.Tracked[rf] = map[netip.Prefix]attrHandle{}
 		s.Suppressed[rf] = map[netip.Prefix]struct{}{}
+		s.Versions[rf] = new(int64)
 	}
 }
 
@@ -545,7 +547,8 @@ func (f *fsm) sendUpdates(ctx context.Context, c net.Conn, reevaluate bool) (boo
 		}
 		tracked := f.session.Tracked[rf]
 		suppressed := f.session.Suppressed[rf]
-		for nlri, attrs := range table.updatedRoutes(f.exportFilter, tracked, suppressed, &f.session.Version, reevaluate) {
+		versions := f.session.Versions[rf]
+		for nlri, attrs := range table.updatedRoutes(f.exportFilter, tracked, suppressed, versions, reevaluate) {
 			if attrs.Nexthop().IsValid() {
 				f.session.Logger.Log(ctx, LevelUpdates, "announcing", "nlri", nlri)
 				if err := f.sendUpdate(c, nlri, attrs); err != nil {
