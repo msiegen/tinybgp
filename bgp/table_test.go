@@ -290,6 +290,103 @@ func TestUpdatedRoutes(t *testing.T) {
 	}
 }
 
+func TestUpdatedRoutesReevaluate(t *testing.T) {
+	table := &Table{}
+	peer1 := netip.MustParseAddr("3fff::1")
+	a1 := attributesBuilder{Peer: peer1}.Build()
+	p1 := netip.MustParsePrefix("2001:db8:1234:5678::/64")
+
+	var discard bool
+
+	exportFilter := func(nlri netip.Prefix, attrs Attributes) (Attributes, error) {
+		if discard {
+			return Attributes{}, ErrDiscard
+		}
+		return attrs, nil
+	}
+
+	tracked := map[netip.Prefix]attrHandle{}
+	suppressed := map[netip.Prefix]struct{}{}
+	var version int64
+
+	comparePrefixes := func(a, b netip.Prefix) int {
+		return a.Addr().Compare(b.Addr())
+	}
+	collect := func() ([]netip.Prefix, []netip.Prefix) {
+		var announce []netip.Prefix
+		var withdraw []netip.Prefix
+		for nlri, attrs := range table.updatedRoutes(exportFilter, tracked, suppressed, &version, true) {
+			var zero Attributes
+			if attrs == zero {
+				withdraw = append(withdraw, nlri)
+				continue
+			}
+			announce = append(announce, nlri)
+		}
+		slices.SortFunc(announce, comparePrefixes)
+		slices.SortFunc(withdraw, comparePrefixes)
+		return announce, withdraw
+	}
+
+	// Announce a route.
+	table.AddPath(p1, a1)
+	wantAnnounce := []netip.Prefix{p1}
+	var wantWithdraw []netip.Prefix
+	gotAnnounce, gotWithdraw := collect()
+	if !reflect.DeepEqual(gotAnnounce, wantAnnounce) {
+		t.Errorf("got announce %v, want %v", gotAnnounce, wantAnnounce)
+	}
+	if !reflect.DeepEqual(gotWithdraw, wantWithdraw) {
+		t.Errorf("got withdraw %v, want %v", gotWithdraw, wantWithdraw)
+	}
+
+	// Do not yield the same announcement again.
+	wantAnnounce = nil
+	wantWithdraw = nil
+	gotAnnounce, gotWithdraw = collect()
+	if !reflect.DeepEqual(gotAnnounce, wantAnnounce) {
+		t.Errorf("got announce %v, want %v", gotAnnounce, wantAnnounce)
+	}
+	if !reflect.DeepEqual(gotWithdraw, wantWithdraw) {
+		t.Errorf("got withdraw %v, want %v", gotWithdraw, wantWithdraw)
+	}
+
+	// Update the export filter to withdraw the route.
+	discard = true
+	wantAnnounce = nil
+	wantWithdraw = []netip.Prefix{p1}
+	gotAnnounce, gotWithdraw = collect()
+	if !reflect.DeepEqual(gotAnnounce, wantAnnounce) {
+		t.Errorf("got announce %v, want %v", gotAnnounce, wantAnnounce)
+	}
+	if !reflect.DeepEqual(gotWithdraw, wantWithdraw) {
+		t.Errorf("got withdraw %v, want %v", gotWithdraw, wantWithdraw)
+	}
+
+	// Do not yield the same withdrawal again.
+	wantAnnounce = nil
+	wantWithdraw = nil
+	gotAnnounce, gotWithdraw = collect()
+	if !reflect.DeepEqual(gotAnnounce, wantAnnounce) {
+		t.Errorf("got announce %v, want %v", gotAnnounce, wantAnnounce)
+	}
+	if !reflect.DeepEqual(gotWithdraw, wantWithdraw) {
+		t.Errorf("got withdraw %v, want %v", gotWithdraw, wantWithdraw)
+	}
+
+	// Update the export filter to announce the route again.
+	discard = false
+	wantAnnounce = []netip.Prefix{p1}
+	wantWithdraw = nil
+	gotAnnounce, gotWithdraw = collect()
+	if !reflect.DeepEqual(gotAnnounce, wantAnnounce) {
+		t.Errorf("got announce %v, want %v", gotAnnounce, wantAnnounce)
+	}
+	if !reflect.DeepEqual(gotWithdraw, wantWithdraw) {
+		t.Errorf("got withdraw %v, want %v", gotWithdraw, wantWithdraw)
+	}
+}
+
 func TestWatchBest(t *testing.T) {
 	table := &Table{}
 	p1 := netip.MustParsePrefix("2001:db8:1::/48")

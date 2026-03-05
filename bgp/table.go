@@ -233,6 +233,11 @@ func (t *Table) updatedRoutes(export Filter, tracked map[netip.Prefix]attrHandle
 				suppressed[nlri] = struct{}{}
 				return true // Move on to the next route.
 			}
+			if isTracked && attrs == oldAttrs {
+				if _, ok := suppressed[nlri]; !ok {
+					return true // Route is unchanged.
+				}
+			}
 			// The export filter allowed the route.
 			delete(suppressed, nlri)
 			if !yield(nlri, attrsValue) {
@@ -259,7 +264,7 @@ func (t *Table) updatedRoutes(export Filter, tracked map[netip.Prefix]attrHandle
 		current := t.version.Load()
 		t.mu.Unlock()
 
-		if ok {
+		if ok && !reevaluate {
 			// We got a list of changes. Announce or withdraw the latest routes for
 			// those networks. This may skip intermediate updates if a route changed
 			// several times rapidly.
