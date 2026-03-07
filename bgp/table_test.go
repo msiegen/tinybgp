@@ -290,7 +290,7 @@ func TestUpdatedRoutes(t *testing.T) {
 	}
 }
 
-func TestUpdatedRoutesReevaluate(t *testing.T) {
+func TestUpdatedRoutesReevaluateWithdraw(t *testing.T) {
 	table := &Table{}
 	peer1 := netip.MustParseAddr("3fff::1")
 	a1 := attributesBuilder{Peer: peer1}.Build()
@@ -384,6 +384,89 @@ func TestUpdatedRoutesReevaluate(t *testing.T) {
 	}
 	if !reflect.DeepEqual(gotWithdraw, wantWithdraw) {
 		t.Errorf("got withdraw %v, want %v", gotWithdraw, wantWithdraw)
+	}
+}
+
+func TestUpdatedRoutesReevaluateCommunity(t *testing.T) {
+	table := &Table{}
+	peer1 := netip.MustParseAddr("3fff::1")
+	a1 := attributesBuilder{Peer: peer1}.Build()
+	p1 := netip.MustParsePrefix("2001:db8:1234:5678::/64")
+
+	var addCommunity bool
+
+	exportFilter := func(nlri netip.Prefix, attrs Attributes) (Attributes, error) {
+		if addCommunity {
+			attrs.SetCommunities(map[Community]bool{
+				NewCommunity(4271): true,
+			})
+		}
+		return attrs, nil
+	}
+
+	tracked := map[netip.Prefix]attrHandle{}
+	suppressed := map[netip.Prefix]struct{}{}
+	var version int64
+
+	collect := func() map[netip.Prefix]Attributes {
+		var announce map[netip.Prefix]Attributes
+		for nlri, attrs := range table.updatedRoutes(exportFilter, tracked, suppressed, &version, true) {
+			if announce == nil {
+				announce = map[netip.Prefix]Attributes{}
+			}
+			announce[nlri] = attrs
+		}
+		return announce
+	}
+
+	withoutCommunity := map[netip.Prefix]Attributes{
+		p1: a1,
+	}
+
+	withCommunityAttrs := a1
+	withCommunityAttrs.SetCommunities(map[Community]bool{
+		NewCommunity(4271): true,
+	})
+	withCommunity := map[netip.Prefix]Attributes{
+		p1: withCommunityAttrs,
+	}
+
+	// Announce a route.
+	table.AddPath(p1, a1)
+	want := withoutCommunity
+	got := collect()
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+
+	// Do not yield the same announcement again.
+	want = nil
+	got = collect()
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+
+	// Update the export filter to add a community.
+	addCommunity = true
+	want = withCommunity
+	got = collect()
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+
+	// Do not yield the same announcement again.
+	want = nil
+	got = collect()
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+
+	// Update the export filter to remove the community.
+	addCommunity = false
+	want = withoutCommunity
+	got = collect()
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
 	}
 }
 
