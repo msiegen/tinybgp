@@ -20,6 +20,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unique"
 )
 
 const (
@@ -211,34 +212,35 @@ func (t *Table) updatedRoutes(export Filter, tracked map[netip.Prefix]attrHandle
 		// identical route is not already tracked. It returns true if further
 		// iteration is still needed.
 		announce := func(nlri netip.Prefix, attrs attrHandle) bool {
-			// Check if we previously yielded the same route.
+			// Check if we previously yielded a route for this NLRI.
 			oldAttrs, isTracked := tracked[nlri]
-			if !reevaluate && isTracked && attrs == oldAttrs {
-				return true // Route is unchanged.
-			}
-			// We did not previously yield this route. Decide whether we should,
-			// and cache the decision for later reuse.
-			tracked[nlri] = attrs
+			// Decide if we should yield the route and cache the decision.
 			attrsValue, err := export(nlri, attrs.Value())
+			attrs = unique.Make(attrsValue)
+			tracked[nlri] = attrs
 			if err != nil {
 				// The export filter rejected the route.
+				if _, ok := suppressed[nlri]; ok {
+					// We're not currently announcing this NLRI, so no change.
+					return true
+				}
 				if isTracked {
-					if _, ok := suppressed[nlri]; !ok {
-						// We previously yielded a route for this NLRI, so need to withdraw.
-						if !yield(nlri, Attributes{}) {
-							return false
-						}
+					// We previously yielded a route for this NLRI, so need to withdraw.
+					if !yield(nlri, Attributes{}) {
+						return false
 					}
 				}
 				suppressed[nlri] = struct{}{}
 				return true // Move on to the next route.
 			}
+			// The export filter allowed the route.
 			if isTracked && attrs == oldAttrs {
 				if _, ok := suppressed[nlri]; !ok {
-					return true // Route is unchanged.
+					// We already announced this route and it hasn't changed.
+					return true
 				}
 			}
-			// The export filter allowed the route.
+			// We need to announce this route.
 			delete(suppressed, nlri)
 			if !yield(nlri, attrsValue) {
 				return false
